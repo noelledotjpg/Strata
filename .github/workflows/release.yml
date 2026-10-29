@@ -1,0 +1,91 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (no release is published for manual runs)"
+        default: "0.0.0-dev"
+
+jobs:
+  build:
+    name: Build (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: windows-latest, platform: windows }
+          - { runner: ubuntu-latest,  platform: linux }
+
+
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Resolve version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="$INPUT_VERSION"
+          fi
+          echo "value=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build app image
+        run: |
+          chmod +x gradlew
+          ./gradlew packageApp -PappVersion="${{ steps.version.outputs.value }}"
+
+      - name: Create archive
+        env:
+          ARCHIVE: Strata-${{ steps.version.outputs.value }}-${{ matrix.platform }}-x64
+        run: |
+          mkdir -p dist
+          cd build/package
+          case "${{ matrix.platform }}" in
+            windows) 7z a -tzip "$GITHUB_WORKSPACE/dist/$ARCHIVE.zip" Strata ;;
+            linux)   zip -r -y "$GITHUB_WORKSPACE/dist/$ARCHIVE.zip" Strata ;;
+          esac
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strata-${{ matrix.platform }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+          generate_release_notes: true

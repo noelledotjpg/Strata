@@ -1,4 +1,0 @@
-{
-	"timestampRelease": 1242245460000,
-	"commitMessage": "add tile placing/breaking, increase chunk size to 16x16x16 because it's faster"
-}

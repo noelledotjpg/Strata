@@ -1,0 +1,2 @@
+Monospace font made by xllifi (https://modrinth.com/resourcepack/mono7)
+Backported by nikohalfkino

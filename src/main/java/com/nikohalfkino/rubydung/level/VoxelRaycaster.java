@@ -1,0 +1,100 @@
+package com.nikohalfkino.rubydung.level;
+
+import com.nikohalfkino.rubydung.HitResult;
+import com.nikohalfkino.rubydung.level.Tiles.Tile;
+import com.nikohalfkino.rubydung.phys.AABB;
+
+public final class VoxelRaycaster {
+
+    private static final int MAX_PICK_HEIGHT = computeMaxPickHeight();
+
+    private VoxelRaycaster() {
+    }
+
+    private static int computeMaxPickHeight() {
+        int max = 1;
+        for (Tile tile : Tile.getTiles()) {
+            AABB box = tile.getPickAABB(0, 0, 0);
+            if (box != null) {
+                max = Math.max(max, (int) Math.ceil(box.maxY - box.minY));
+            }
+        }
+        return max;
+    }
+
+    public static HitResult raycast(Level level, double originX, double originY, double originZ,
+                                     double dirX, double dirY, double dirZ, double maxDistance) {
+        double length = Math.sqrt(dirX * dirX + dirY * dirY + dirZ * dirZ);
+        if (length < 1.0E-8) {
+            return null;
+        }
+        dirX /= length;
+        dirY /= length;
+        dirZ /= length;
+
+        int x = (int) Math.floor(originX);
+        int y = (int) Math.floor(originY);
+        int z = (int) Math.floor(originZ);
+
+        int stepX = Double.compare(dirX, 0.0) > 0 ? 1 : (dirX < 0.0 ? -1 : 0);
+        int stepY = Double.compare(dirY, 0.0) > 0 ? 1 : (dirY < 0.0 ? -1 : 0);
+        int stepZ = Double.compare(dirZ, 0.0) > 0 ? 1 : (dirZ < 0.0 ? -1 : 0);
+
+        double tDeltaX = dirX != 0.0 ? Math.abs(1.0 / dirX) : Double.POSITIVE_INFINITY;
+        double tDeltaY = dirY != 0.0 ? Math.abs(1.0 / dirY) : Double.POSITIVE_INFINITY;
+        double tDeltaZ = dirZ != 0.0 ? Math.abs(1.0 / dirZ) : Double.POSITIVE_INFINITY;
+
+        double tMaxX = tDeltaX == Double.POSITIVE_INFINITY ? Double.POSITIVE_INFINITY
+                : ((stepX > 0 ? (x + 1 - originX) : (originX - x)) * tDeltaX);
+        double tMaxY = tDeltaY == Double.POSITIVE_INFINITY ? Double.POSITIVE_INFINITY
+                : ((stepY > 0 ? (y + 1 - originY) : (originY - y)) * tDeltaY);
+        double tMaxZ = tDeltaZ == Double.POSITIVE_INFINITY ? Double.POSITIVE_INFINITY
+                : ((stepZ > 0 ? (z + 1 - originZ) : (originZ - z)) * tDeltaZ);
+
+        int enteredFace = -1;
+        double traveled = 0.0;
+
+        while (traveled <= maxDistance) {
+            if (enteredFace != -1) {
+                int[] target = resolveTarget(level, x, y, z);
+                if (target != null) {
+                    return new HitResult(target[0], target[1], target[2], 0, enteredFace);
+                }
+            }
+
+            if (tMaxX < tMaxY && tMaxX < tMaxZ) {
+                x += stepX;
+                traveled = tMaxX;
+                tMaxX += tDeltaX;
+                enteredFace = stepX > 0 ? Tile.FACE_WEST : Tile.FACE_EAST;
+            } else if (tMaxY < tMaxZ) {
+                y += stepY;
+                traveled = tMaxY;
+                tMaxY += tDeltaY;
+                enteredFace = stepY > 0 ? Tile.FACE_BOTTOM : Tile.FACE_TOP;
+            } else {
+                z += stepZ;
+                traveled = tMaxZ;
+                tMaxZ += tDeltaZ;
+                enteredFace = stepZ > 0 ? Tile.FACE_NORTH : Tile.FACE_SOUTH;
+            }
+        }
+
+        return null;
+    }
+
+    private static int[] resolveTarget(Level level, int x, int y, int z) {
+        for (int rootY = y; rootY > y - MAX_PICK_HEIGHT; rootY--) {
+            Tile tile = Tile.byId(level.getTile(x, rootY, z));
+            if (tile == null || tile == Tile.AIR) {
+                continue;
+            }
+
+            AABB box = tile.getPickAABB(x, rootY, z);
+            if (box != null && y >= box.minY && y < box.maxY) {
+                return new int[]{x, rootY, z};
+            }
+        }
+        return null;
+    }
+}
