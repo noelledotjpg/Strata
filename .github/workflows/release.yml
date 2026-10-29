@@ -3,26 +3,28 @@ name: Release
 on:
   push:
     tags:
-      - "v*"
-  workflow_dispatch:
+      - "v*"          # e.g. v1.0.0 -> builds and publishes a GitHub release
+  workflow_dispatch:  # manual run: builds the packages and creates a DRAFT release
     inputs:
       version:
-        description: "Version to build (no release is published for manual runs)"
-        default: "0.0.0-dev"
+        description: "Version to build, e.g. 1.0.0 (the release is tagged v<version>)"
+        required: true
 
 jobs:
   build:
     name: Build (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
+    outputs:
+      version: ${{ steps.version.outputs.value }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - { runner: windows-latest, platform: windows }
           - { runner: ubuntu-latest,  platform: linux }
-
-
-
+          # macOS is disabled for now. LWJGL 2.9.3 only ships x86_64 macOS natives, so if you
+          # re-enable it, build on an Intel runner:
+          # - { runner: macos-15-intel, platform: macos }
     defaults:
       run:
         shell: bash
@@ -74,7 +76,6 @@ jobs:
   release:
     name: Publish release
     needs: build
-    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -87,5 +88,10 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
+          # Tag pushes use their own tag. Manual runs create v<version> and keep the release
+          # as a draft, so you can set "pre-release" etc. and publish it from the Releases page.
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', needs.build.outputs.version) }}
+          target_commitish: ${{ github.sha }}
+          draft: ${{ github.event_name == 'workflow_dispatch' }}
           files: dist/*.zip
           generate_release_notes: true
