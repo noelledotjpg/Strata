@@ -1,6 +1,7 @@
 package com.nikohalfkino.rubydung;
 
 import com.nikohalfkino.rubydung.interfaces.screen.LoadingScreen;
+import com.nikohalfkino.rubydung.interfaces.screen.TitleScreen;
 import com.nikohalfkino.rubydung.level.Level;
 
 import com.nikohalfkino.rubydung.level.LevelIO;
@@ -8,6 +9,7 @@ import com.nikohalfkino.rubydung.level.LevelRenderer;
 import com.nikohalfkino.rubydung.level.tiles.Tile;
 import com.nikohalfkino.rubydung.level.WorldManager;
 import com.nikohalfkino.rubydung.level.generation.LevelGenerator;
+import com.nikohalfkino.rubydung.level.generation.WorldGenStatus;
 import com.nikohalfkino.rubydung.util.SaveQueue;
 import com.nikohalfkino.rubydung.player.Player;
 import com.nikohalfkino.rubydung.player.PlayerInteraction;
@@ -59,18 +61,48 @@ public class GameSession {
         this.playerInteraction.tick();
     }
 
-    private void enterWorld(String worldName, LevelGenerator.WorldType type, Long seed, int width, int height, int depth) {
+    private void enterWorld(String worldName, LevelGenerator.WorldType type, Long seed, int width, int height, int depth,
+                            boolean saveWhenReady) {
         // A background save of this world must be on disk before it is read back.
         SaveQueue.flush();
 
-        this.level = seed != null
-                ? new Level(worldName, width, height, depth, type, seed)
-                : new Level(worldName, width, height, depth, type);
+        // The old world (door travel) is dropped now, not when the new one is ready: it has been saved by the caller,
+        // and while it lingered the game would keep saving the new world's clock into its files.
+        leaveWorld();
 
-        if (this.levelRenderer != null) {
-            this.levelRenderer.dispose();
-        }
+        // Creating the level (generating or reading it) takes seconds. It used to run right here, on the thread that
+        // draws the frames, so the loading screen was not on screen yet and could not show what the generator was
+        // doing ("Carving coastlines..."); it only appeared when everything was done, showing the last step.
+        // Now the screen opens first and the level is made on a worker thread while it keeps drawing.
+        WorldGenStatus.set("Preparing the world...");
+        LoadingScreen loadingScreen = new LoadingScreen(this.game);
+        this.game.openScreen(loadingScreen);
 
+        // Tile's static setup registers every tile and may touch OpenGL, which only works on this thread.
+        // Do it now so the worker never triggers it.
+        Tile.getTiles();
+
+        Thread worker = new Thread(() -> {
+            Level built;
+            try {
+                built = seed != null
+                        ? new Level(worldName, width, height, depth, type, seed)
+                        : new Level(worldName, width, height, depth, type);
+            } catch (Throwable t) {
+                t.printStackTrace();
+                this.game.runOnMainThread(() -> this.game.openScreen(new TitleScreen(this.game)));
+                return;
+            }
+            Level ready = built;
+            this.game.runOnMainThread(() -> finishEnteringWorld(ready, loadingScreen, saveWhenReady));
+        }, "world-generation");
+        worker.setDaemon(true);
+        worker.start();
+    }
+
+    /** main thread: the level exists, everything that needs OpenGL is made here, then the screen starts building meshes */
+    private void finishEnteringWorld(Level built, LoadingScreen loadingScreen, boolean saveWhenReady) {
+        this.level = built;
         this.levelRenderer = new LevelRenderer(this.level);
         this.player = new Player(this.level);
         this.playerInteraction = new PlayerInteraction(this.level, this.player);
@@ -88,7 +120,11 @@ public class GameSession {
             this.player.flySpeedMultiplier = this.level.savedFlySpeedMultiplier;
         }
 
-        this.game.openScreen(new LoadingScreen(this.game, this.levelRenderer));
+        if (saveWhenReady) {
+            this.level.save();
+        }
+
+        loadingScreen.startBuilding(this.levelRenderer);
     }
 
     public void loadWorld(String worldName) {
@@ -116,20 +152,17 @@ public class GameSession {
             }
         }
 
-        enterWorld(worldName, worldType, null, width, height, depth);
+        enterWorld(worldName, worldType, null, width, height, depth, false);
     }
 
     public void startNewWorld(String worldName, LevelGenerator.WorldType type, LevelGenerator.WorldSize size) {
         WorldManager.saveWorldSize(worldName, size.width, size.height, size.depth);
-        enterWorld(worldName, type, null, size.width, size.height, size.depth);
-
-        this.level.save();
+        enterWorld(worldName, type, null, size.width, size.height, size.depth, true);
     }
 
     public void startNewWorld(String worldName, LevelGenerator.WorldType type, long seed, LevelGenerator.WorldSize size) {
         WorldManager.saveWorldSize(worldName, size.width, size.height, size.depth);
-        enterWorld(worldName, type, seed, size.width, size.height, size.depth);
-        this.level.save();
+        enterWorld(worldName, type, seed, size.width, size.height, size.depth, true);
     }
 
     public void regenerateLevel(Long customSeed, LevelGenerator.WorldType overrideType, LevelGenerator.WorldSize overrideSize) {

@@ -1,5 +1,6 @@
 package com.nikohalfkino.rubydung.level.tiles;
 
+import com.nikohalfkino.rubydung.level.Chunk;
 import com.nikohalfkino.rubydung.level.Level;
 import com.nikohalfkino.rubydung.phys.AABB;
 import com.nikohalfkino.rubydung.render.Billboard;
@@ -128,11 +129,11 @@ public abstract class BillboardTile extends Tile {
         tessellator.color(brightness, brightness, brightness, 1.0F);
 
         int slot = getAtlasSlot(FACE_NORTH);
-        float minU = slot / (float) totalAtlasSlots;
         float extent = getAtlasExtent();
-        float maxU = minU + extent / totalAtlasSlots;
-        float minV = 0.0F;
-        float maxV = extent;
+        float minU = Chunk.atlasU(slot, 0.0F);
+        float maxU = Chunk.atlasU(slot, extent);
+        float minV = Chunk.atlasV(slot, 0.0F);
+        float maxV = Chunk.atlasV(slot, extent);
 
         int hash = x * 31220 + z * 452389 + y * 93901;
         if ((hash & 1) == 0) {
@@ -177,11 +178,11 @@ public abstract class BillboardTile extends Tile {
         float brightness = brightnessOverride >= 0.0F ? brightnessOverride : spriteBrightness(level, x, y, z);
 
         int slot = getAtlasSlot(FACE_NORTH);
-        float minU = slot / (float) totalAtlasSlots;
         float extent = getAtlasExtent();
-        float maxU = minU + extent / totalAtlasSlots;
-        float minV = 0.0F;
-        float maxV = extent;
+        float minU = Chunk.atlasU(slot, 0.0F);
+        float maxU = Chunk.atlasU(slot, extent);
+        float minV = Chunk.atlasV(slot, 0.0F);
+        float maxV = Chunk.atlasV(slot, extent);
 
         int hash = x * 31220 + z * 452389 + y * 93901;
         if ((hash & 1) == 0) {

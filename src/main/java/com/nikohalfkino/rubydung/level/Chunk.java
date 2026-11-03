@@ -22,6 +22,7 @@ public class Chunk {
     private static final int LAYERS = 3;
 
     private static final int TEXTURE;
+    private static final Textures.AtlasLayout ATLAS_LAYOUT;
     private static final int TOTAL_ATLAS_SLOTS;
     private static final Tessellator TESSELLATOR = new Tessellator();
 
@@ -52,6 +53,7 @@ public class Chunk {
 
         TOTAL_ATLAS_SLOTS = Math.max(1, textureList.size());
         TEXTURE = Textures.buildAtlas(textureList.toArray(new String[0]), GL_NEAREST);
+        ATLAS_LAYOUT = Textures.getAtlasLayout(TEXTURE);
 
         for (Tile tile : Tile.getTiles()) {
             tile.onAtlasBuilt(textureToSlotMap);
@@ -84,6 +86,10 @@ public class Chunk {
     public static int getAtlasTexture() { return TEXTURE; }
     public static int getTotalAtlasSlots() { return TOTAL_ATLAS_SLOTS; }
 
+    /** texture coordinates inside a slot of the block atlas: local 0..1 is the slot's own cell, left to right and top to bottom */
+    public static float atlasU(int slot, float local) { return ATLAS_LAYOUT.u(slot, local); }
+    public static float atlasV(int slot, float local) { return ATLAS_LAYOUT.v(slot, local); }
+
     public Chunk(Level level, int minX, int minY, int minZ, int maxX, int maxY, int maxZ) {
         this.level = level;
 
@@ -115,9 +121,66 @@ public class Chunk {
 
     void rebuildNow() {
         this.dirty = false;
-        buildList(0);
-        buildList(1);
-        buildList(LAYER_LIQUID);
+        upload(computeAll(TESSELLATOR));
+    }
+
+    /**
+     * the CPU half of a chunk build: everything that reads the level and makes vertices, nothing that touches GL,
+     * so it can run on a worker thread (with that thread's own Tessellator) as long as the level isn't being changed
+     */
+    public static final class Built {
+        private final Chunk chunk;
+        private final List<Tessellator.Mesh>[] meshes;
+        private final boolean[] empty;
+        private List<int[]> billboards = new ArrayList<>();
+        private boolean liquidFound = false;
+
+        @SuppressWarnings("unchecked")
+        private Built(Chunk chunk) {
+            this.chunk = chunk;
+            this.meshes = new List[LAYERS];
+            this.empty = new boolean[LAYERS];
+        }
+
+        public Chunk chunk() { return this.chunk; }
+    }
+
+    /** thread safe as long as the level isn't modified meanwhile; the tessellator must belong to the calling thread */
+    public Built computeAll(Tessellator tessellator) {
+        Built built = new Built(this);
+        boolean nothing = drawsNothing();   // once per chunk, not once per layer
+        for (int layer = 0; layer < LAYERS; layer++) {
+            if (nothing) {
+                built.empty[layer] = true;
+            } else {
+                computeLayer(built, layer, tessellator);
+            }
+        }
+        return built;
+    }
+
+    /** GL thread only: compiles the display lists from a finished build */
+    public void upload(Built built) {
+        for (int layer = 0; layer < LAYERS; layer++) {
+            glNewList(this.lists + layer, GL_COMPILE);
+            if (!built.empty[layer]) {
+                if (layer != LAYER_LIQUID) {
+                    glEnable(GL_TEXTURE_2D);
+                    Textures.bind(TEXTURE);
+                }
+                for (Tessellator.Mesh mesh : built.meshes[layer]) {
+                    Tessellator.draw(mesh);
+                }
+                if (layer != LAYER_LIQUID) {
+                    glDisable(GL_TEXTURE_2D);
+                }
+            }
+            glEndList();
+        }
+        this.billboardPositions.clear();
+        this.billboardPositions.addAll(built.billboards);
+        this.hasLiquid = built.liquidFound;
+        this.dirty = false;
     }
 
     public boolean isDirty() {
@@ -128,21 +191,99 @@ public class Chunk {
         return this.hasLiquid;
     }
 
+    /**
+     * true if nothing in this chunk can be seen: it is all air, or it is buried in plain opaque blocks (a chunk deep in the rock).
+     * most chunks of a big world are one of those, and skipping their cell-by-cell mesh pass is what makes loading fast.
+     * only called for chunks that really are empty or buried, anything else (liquid, sub-tiles, odd shaped tiles, the level's edge) gets the normal pass
+     */
+    private boolean drawsNothing() {
+        boolean checkSubTiles = !this.level.getSubTiles().isEmpty();
+        LiquidLayer liquids = this.level.getLiquids();
+
+        // all air, no liquid, no sub-tiles
+        boolean allAir = true;
+        scan:
+        for (int y = this.minY; y < this.maxY; y++) {
+            for (int z = this.minZ; z < this.maxZ; z++) {
+                for (int x = this.minX; x < this.maxX; x++) {
+                    if (this.level.getTile(x, y, z) != 0 || liquids.has(x, y, z)
+                            || (checkSubTiles && this.level.getSubTiles().has(x, y, z))) {
+                        allAir = false;
+                        break scan;
+                    }
+                }
+            }
+        }
+        if (allAir) {
+            return true;
+        }
+
+        // buried: this chunk and the layer of cells around it are all plain opaque cubes, so no face of this chunk is exposed.
+        // chunks on the edge of the level are always built, their outer faces can be seen from outside
+        if (this.minX == 0 || this.minY == 0 || this.minZ == 0
+                || this.maxX >= this.level.width || this.maxY >= this.level.depth || this.maxZ >= this.level.height
+                || !this.level.getSubTiles().isEmpty()) {
+            return false;
+        }
+        byte[] opaque = new byte[256];       // per tile id: 0 = not looked at yet, 1 = plain opaque cube, 2 = anything else
+        for (int y = this.minY - 1; y <= this.maxY; y++) {
+            for (int z = this.minZ - 1; z <= this.maxZ; z++) {
+                for (int x = this.minX - 1; x <= this.maxX; x++) {
+                    int id = this.level.getTile(x, y, z);
+                    if (opaque[id] == 0) {
+                        Tile tile = Tile.byId(id);
+                        boolean plain = id != 0 && tile != null && tile.getClass() == Tile.class
+                                && tile.isSolid() && !tile.isTransparent() && tile.occludesNeighbours();
+                        opaque[id] = (byte) (plain ? 1 : 2);
+                    }
+                    if (opaque[id] != 1 || liquids.has(x, y, z)) {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
     private void buildList(int layer) {
-        boolean liquidLayer = layer == LAYER_LIQUID;
-        boolean liquidFound = false;
+        // single layer rebuild, same two steps as a full build
+        Built built = new Built(this);
+        boolean nothing = drawsNothing();
+        if (nothing) {
+            built.empty[layer] = true;
+        } else {
+            computeLayer(built, layer, TESSELLATOR);
+        }
 
         glNewList(this.lists + layer, GL_COMPILE);
-        if (!liquidLayer) {
-            // liquids don't use the atlas, LiquidShader makes their look
-            glEnable(GL_TEXTURE_2D);
-            Textures.bind(TEXTURE);
+        if (!built.empty[layer]) {
+            if (layer != LAYER_LIQUID) {
+                glEnable(GL_TEXTURE_2D);
+                Textures.bind(TEXTURE);
+            }
+            for (Tessellator.Mesh mesh : built.meshes[layer]) {
+                Tessellator.draw(mesh);
+            }
+            if (layer != LAYER_LIQUID) {
+                glDisable(GL_TEXTURE_2D);
+            }
         }
-        TESSELLATOR.init();
+        glEndList();
 
         if (layer == 0) {
             this.billboardPositions.clear();
+            this.billboardPositions.addAll(built.billboards);
         }
+        if (layer == LAYER_LIQUID) {
+            this.hasLiquid = built.liquidFound;
+        }
+    }
+
+    private void computeLayer(Built built, int layer, Tessellator tessellator) {
+        boolean liquidLayer = layer == LAYER_LIQUID;
+
+        tessellator.beginCapture();
+        tessellator.init();
 
         for (int x = this.minX; x < this.maxX; ++x) {
             for (int y = this.minY; y < this.maxY; ++y) {
@@ -154,8 +295,8 @@ public class Chunk {
                         // everything else (sub-tiles included) belongs to layers 0 and 1
                         LiquidTile liquid = this.level.getLiquids().get(x, y, z);
                         if (liquid != null) {
-                            liquid.renderLiquid(TESSELLATOR, this.level, x, y, z);
-                            liquidFound = true;
+                            liquid.renderLiquid(tessellator, this.level, x, y, z);
+                            built.liquidFound = true;
                         }
                         continue;
                     }
@@ -168,12 +309,12 @@ public class Chunk {
                         if (tile != null) {
                             if (tile.isBillboard()) {
                                 if (layer == 0 && !this.level.isMultiTilePart(x, y, z)) {
-                                    this.billboardPositions.add(new int[]{x, y, z});
+                                    built.billboards.add(new int[]{x, y, z});
                                 }
                                 continue;
                             }
                             int direction = this.level.getData(x, y, z);
-                            tile.render(TESSELLATOR, this.level, layer, x, y, z, TOTAL_ATLAS_SLOTS, direction);
+                            tile.render(tessellator, this.level, layer, x, y, z, TOTAL_ATLAS_SLOTS, direction);
                         }
                     }
 
@@ -183,31 +324,24 @@ public class Chunk {
                         if (shared == null || shared.isBillboard()) {
                             continue;
                         }
-                        TESSELLATOR.setOffset(subTile.ox, subTile.oy, subTile.oz);
+                        tessellator.setOffset(subTile.ox, subTile.oy, subTile.oz);
                         int clip = SubTile.clipOf(subTile.data);
                         if (clip != 0) {
                             // A block sharing the cell with a slab: only its lower or upper half is drawn.
                             float lo = clip == SubTile.CLIP_BOTTOM ? y : y + 0.5F;
-                            TESSELLATOR.setClipY(y, y + 1.0F, lo + subTile.oy, lo + 0.5F + subTile.oy);
+                            tessellator.setClipY(y, y + 1.0F, lo + subTile.oy, lo + 0.5F + subTile.oy);
                         }
-                        shared.render(TESSELLATOR, this.level, layer, x, y, z, TOTAL_ATLAS_SLOTS,
+                        shared.render(tessellator, this.level, layer, x, y, z, TOTAL_ATLAS_SLOTS,
                                 SubTile.baseData(subTile.data));
-                        TESSELLATOR.clearClip();
-                        TESSELLATOR.clearOffset();
+                        tessellator.clearClip();
+                        tessellator.clearOffset();
                     }
                 }
             }
         }
 
-        TESSELLATOR.flush();
-        if (!liquidLayer) {
-            glDisable(GL_TEXTURE_2D);
-        }
-        glEndList();
-
-        if (liquidLayer) {
-            this.hasLiquid = liquidFound;
-        }
+        tessellator.flush();
+        built.meshes[layer] = tessellator.endCapture();
     }
 
     public void render(int layer) {

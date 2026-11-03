@@ -1,7 +1,9 @@
 package com.nikohalfkino.rubydung.level.tiles;
 
 import com.nikohalfkino.rubydung.player.HitResult;
+import com.nikohalfkino.rubydung.level.Chunk;
 import com.nikohalfkino.rubydung.level.Level;
+import com.nikohalfkino.rubydung.level.UnderwaterTint;
 import com.nikohalfkino.rubydung.phys.AABB;
 import com.nikohalfkino.rubydung.render.Tessellator;
 import com.nikohalfkino.rubydung.render.Textures;
@@ -621,6 +623,8 @@ public class Tile {
             int[][] vertices = FACE_VERTICES[face];
 
             float sky = (emissive || fullBright) ? 1.0F : level.getSkyLight(nx, ny, nz);
+            // liquid over this face darkens and tints it (see UnderwaterTint)
+            float tint = (emissive || fullBright) ? UnderwaterTint.DRY : UnderwaterTint.pack(level, nx, ny, nz);
 
             boolean fullyLit = true;
             for (int v = 0; v < 4; v++) {
@@ -644,8 +648,6 @@ public class Tile {
             }
 
             int slot  = getFaceAtlasSlot(level, x, y, z, face, direction);
-            float minU = slot / (float) totalAtlasSlots;
-            float unitU = 1.0F / totalAtlasSlots;
 
             if (pieces == null) {
                 for (int v = 0; v < 4; v++) {
@@ -654,9 +656,9 @@ public class Tile {
                     if (fullBright) {
                         tessellator.color(shade, shade, shade);
                     } else {
-                        tessellator.color(sky, block[v], shade);
+                        tessellator.color(sky, block[v], shade, tint);
                     }
-                    tessellator.texture(minU + uvs[v][0] * unitU, uvs[v][1]);
+                    tessellator.texture(Chunk.atlasU(slot, uvs[v][0]), Chunk.atlasV(slot, uvs[v][1]));
                     tessellator.vertex(x + vertex[0], y + vertex[1], z + vertex[2]);
                 }
             } else {
@@ -669,9 +671,9 @@ public class Tile {
                             for (int k = 0; k < 4; k++) {
                                 light += piece.weights[v * 4 + k] * block[k];
                             }
-                            tessellator.color(sky, light, shade);
+                            tessellator.color(sky, light, shade, tint);
                         }
-                        tessellator.texture(minU + piece.uv[v * 2] * unitU, piece.uv[v * 2 + 1]);
+                        tessellator.texture(Chunk.atlasU(slot, piece.uv[v * 2]), Chunk.atlasV(slot, piece.uv[v * 2 + 1]));
                         tessellator.vertex(x + piece.pos[v * 3], y + piece.pos[v * 3 + 1], z + piece.pos[v * 3 + 2]);
                     }
                 }

@@ -16,7 +16,7 @@ import com.nikohalfkino.rubydung.level.generation.LevelGenerator;
 /**
  * new-world form laid out like Options: a panel with a dim header per section (World, Terrain, Size, Time), Create / Cancel at the bottom
  *
- * the seed box only shows for natural terrain and the time-of-day row only while the clock is frozen, gaps are adjusted so sections stay evenly spaced
+ * the seed box only shows for natural and island terrain and the time-of-day row only while the clock is frozen, gaps are adjusted so sections stay evenly spaced
  */
 public class CreateWorldScreen extends MenuScreen {
 
@@ -34,7 +34,7 @@ public class CreateWorldScreen extends MenuScreen {
     private static final float HEADER_GAP  = 6.0f;
     private static final float SECTION_GAP = 16.0f;
 
-    private static final float TYPE_GAP   = 20.0f;
+    private static final float TYPE_GAP   = 12.0f;
     private static final float CHOICE_GAP = 12.0f;
 
     // Start times offered when the clock is frozen (0 = midnight, 0.25 = dawn, 0.5 = noon, 0.75 = dusk).
@@ -84,6 +84,7 @@ public class CreateWorldScreen extends MenuScreen {
                 new ChoiceRow<LevelGenerator.WorldType>(PANEL_WIDTH, BUTTON_HEIGHT, TYPE_GAP)
                         .option("Flat", LevelGenerator.WorldType.FLAT)
                         .option("Natural", LevelGenerator.WorldType.NATURAL)
+                        .option("Island", LevelGenerator.WorldType.ISLAND)
                         .onChange(this::selectType));
         this.typeRow.select(this.worldType);
         updateTypeGap();
@@ -149,7 +150,7 @@ public class CreateWorldScreen extends MenuScreen {
     }
 
     private boolean showSeedField() {
-        return this.worldType == LevelGenerator.WorldType.NATURAL;
+        return this.worldType != LevelGenerator.WorldType.FLAT;
     }
 
     private void selectType(LevelGenerator.WorldType type) {

@@ -3,6 +3,8 @@ package com.nikohalfkino.rubydung.render;
 import org.lwjgl.BufferUtils;
 
 import java.nio.FloatBuffer;
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.lwjgl.opengl.GL11.*;
 
@@ -39,6 +41,103 @@ public class Tessellator {
     private float green;
     private float blue;
     private float alpha;
+
+    /**
+     * one flushed batch of vertices, held in plain arrays instead of being drawn: it can be built on any thread
+     * and turned into GL calls later on the GL thread with {@link #draw(Mesh)}
+     */
+    public static final class Mesh {
+        final int primitive;
+        final int vertices;
+        final float[] positions;
+        final float[] uvs;      // null if no texture coordinates were set
+        final float[] colors;   // null if no colours were set
+
+        Mesh(int primitive, int vertices, float[] positions, float[] uvs, float[] colors) {
+            this.primitive = primitive;
+            this.vertices = vertices;
+            this.positions = positions;
+            this.uvs = uvs;
+            this.colors = colors;
+        }
+    }
+
+    // when not null, flush() stores the batch here instead of making GL calls (no GL context needed)
+    private List<Mesh> capture = null;
+
+    /** from now on flush() records meshes instead of drawing, until endCapture() */
+    public void beginCapture() {
+        this.capture = new ArrayList<>();
+    }
+
+    public List<Mesh> endCapture() {
+        List<Mesh> result = this.capture;
+        this.capture = null;
+        return result;
+    }
+
+    private static FloatBuffer replayPositions, replayUvs, replayColors;
+
+    /** GL thread only: draws a recorded mesh (inside a display list, this compiles it into the list) */
+    public static void draw(Mesh mesh) {
+        if (mesh.vertices == 0) {
+            return;
+        }
+        if (replayPositions == null) {
+            replayPositions = BufferUtils.createFloatBuffer(MAX_VERTICES * 3);
+            replayUvs = BufferUtils.createFloatBuffer(MAX_VERTICES * 2);
+            replayColors = BufferUtils.createFloatBuffer(MAX_VERTICES * 4);
+        }
+
+        replayPositions.clear();
+        replayPositions.put(mesh.positions, 0, mesh.vertices * 3);
+        replayPositions.flip();
+        glEnableClientState(GL_VERTEX_ARRAY);
+        glVertexPointer(3, 0, replayPositions);
+
+        if (mesh.uvs != null) {
+            replayUvs.clear();
+            replayUvs.put(mesh.uvs, 0, mesh.vertices * 2);
+            replayUvs.flip();
+            glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+            glTexCoordPointer(2, 0, replayUvs);
+        }
+        if (mesh.colors != null) {
+            replayColors.clear();
+            replayColors.put(mesh.colors, 0, mesh.vertices * 4);
+            replayColors.flip();
+            glEnableClientState(GL_COLOR_ARRAY);
+            glColorPointer(4, 0, replayColors);
+        }
+
+        glDrawArrays(mesh.primitive, 0, mesh.vertices);
+
+        glDisableClientState(GL_VERTEX_ARRAY);
+        if (mesh.uvs != null) {
+            glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+        }
+        if (mesh.colors != null) {
+            glDisableClientState(GL_COLOR_ARRAY);
+        }
+    }
+
+    private static float[] copyOut(FloatBuffer source, int count) {
+        float[] out = new float[count];
+        FloatBuffer view = source.duplicate();
+        view.clear();
+        view.get(out, 0, count);
+        return out;
+    }
+
+    private void captureBatch() {
+        if (this.vertices == 0) {
+            return;
+        }
+        float[] positions = copyOut(this.vertexBuffer, this.vertices * 3);
+        float[] uvs = this.hasTexture ? copyOut(this.textureCoordinateBuffer, this.vertices * 2) : null;
+        float[] colors = this.hasColor ? copyOut(this.colorBuffer, this.vertices * 4) : null;
+        this.capture.add(new Mesh(this.primitive, this.vertices, positions, uvs, colors));
+    }
 
     public void init() {
         init(GL_QUADS);
@@ -269,6 +368,12 @@ public class Tessellator {
     }
 
     public void flush() {
+        if (this.capture != null) {
+            captureBatch();
+            clear();
+            return;
+        }
+
         this.vertexBuffer.flip();
         this.textureCoordinateBuffer.flip();
         this.colorBuffer.flip();

@@ -5,6 +5,8 @@ import com.nikohalfkino.rubydung.phys.AABB;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
 
 class LevelLighting {
 
@@ -302,14 +304,31 @@ class LevelLighting {
         Arrays.fill(this.blockLight, (byte) 0);
         this.lightSources.clear();
 
-        for (int y = 0; y < this.level.depth; y++) {
+        // looking through every cell for light sources is read only, so each layer is searched on its own core.
+        // the layers are joined in order afterwards, so the sources end up in the same order as before
+        List<List<LightSource>> found = new ArrayList<>(Collections.nCopies(this.level.depth, (List<LightSource>) null));
+        java.util.stream.IntStream.range(0, this.level.depth).parallel().forEach(y -> {
+            List<LightSource> layer = null;
             for (int z = 0; z < this.level.height; z++) {
                 for (int x = 0; x < this.level.width; x++) {
-                    Tile tile = Tile.byId(this.level.getTile(x, y, z));
+                    int id = this.level.getTile(x, y, z);
+                    if (id == 0) {
+                        continue;
+                    }
+                    Tile tile = Tile.byId(id);
                     if (tile != null && tile.emitsLight() && !this.level.isMultiTilePart(x, y, z)) {
-                        this.lightSources.add(new LightSource(x, y, z, tile.getLightRadius()));
+                        if (layer == null) {
+                            layer = new ArrayList<>();
+                        }
+                        layer.add(new LightSource(x, y, z, tile.getLightRadius()));
                     }
                 }
+            }
+            found.set(y, layer);
+        });
+        for (List<LightSource> layer : found) {
+            if (layer != null) {
+                this.lightSources.addAll(layer);
             }
         }
 

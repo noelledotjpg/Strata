@@ -14,6 +14,9 @@ import com.nikohalfkino.rubydung.render.Textures;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.lwjgl.opengl.GL11.*;
 
@@ -149,7 +152,11 @@ public class LevelRenderer implements LevelListener {
 
     private int buildCursor = 0;
 
+    // single threaded build, still used when nothing started the parallel one
     public boolean buildNextChunks(int maxChunks) {
+        if (this.parallel) {
+            return uploadBuiltChunks(maxChunks, Long.MAX_VALUE);
+        }
         int built = 0;
         while (built < maxChunks && this.buildCursor < this.chunks.length) {
             Chunk chunk = this.chunks[this.buildCursor++];
@@ -161,7 +168,118 @@ public class LevelRenderer implements LevelListener {
         return this.buildCursor < this.chunks.length;
     }
 
+    // ---- parallel initial build ----
+    // workers make the vertex data (no GL involved), the GL thread only compiles the display lists from it
+
+    private static final int MAX_FINISHED_WAITING = 256;   // caps how many finished meshes wait for the GL thread (memory)
+
+    private static final class Result {
+        final Chunk chunk;
+        final Chunk.Built built;   // null if the worker failed, the GL thread then builds it itself
+
+        Result(Chunk chunk, Chunk.Built built) {
+            this.chunk = chunk;
+            this.built = built;
+        }
+    }
+
+    private boolean parallel = false;
+    private volatile boolean cancelled = false;
+    private int[] pending;                     // indices of the chunks that need building
+    private int uploaded = 0;
+    private final AtomicInteger claimed = new AtomicInteger();
+    private final Semaphore waitingSlots = new Semaphore(MAX_FINISHED_WAITING);
+    private final ConcurrentLinkedQueue<Result> finished = new ConcurrentLinkedQueue<>();
+
+    /**
+     * starts building every dirty chunk on worker threads. keep calling {@link #uploadBuiltChunks} on the GL thread until it returns false.
+     * the level must not change until then
+     */
+    public void startParallelBuild() {
+        int count = 0;
+        int[] list = new int[this.chunks.length];
+        for (int i = 0; i < this.chunks.length; i++) {
+            if (this.chunks[i].isDirty()) {
+                list[count++] = i;
+            }
+        }
+        this.pending = java.util.Arrays.copyOf(list, count);
+        this.uploaded = 0;
+        this.claimed.set(0);
+        this.cancelled = false;
+        this.parallel = true;
+
+        int threads = Math.max(1, Runtime.getRuntime().availableProcessors() - 1);
+        for (int t = 0; t < threads; t++) {
+            Thread worker = new Thread(this::buildWorker, "chunk-build-" + t);
+            worker.setDaemon(true);
+            worker.start();
+        }
+    }
+
+    private void buildWorker() {
+        Tessellator tessellator = new Tessellator();   // each worker needs its own, they hold state
+        try {
+            while (!this.cancelled) {
+                this.waitingSlots.acquire();
+                int slot = this.claimed.getAndIncrement();
+                if (slot >= this.pending.length) {
+                    this.waitingSlots.release();
+                    return;
+                }
+                Chunk chunk = this.chunks[this.pending[slot]];
+                Chunk.Built built = null;
+                try {
+                    built = chunk.computeAll(tessellator);
+                } catch (Throwable t) {
+                    System.err.println("[loading] worker failed on a chunk, building it on the main thread: " + t);
+                    tessellator = new Tessellator();   // it may have been left mid-capture
+                }
+                this.finished.add(new Result(chunk, built));
+            }
+        } catch (InterruptedException ignored) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * GL thread: compiles display lists for chunks the workers finished, for at most maxChunks chunks or until the time is up.
+     * returns true while there is more to do
+     */
+    public boolean uploadBuiltChunks(int maxChunks, long deadlineNanos) {
+        int done = 0;
+        while (done < maxChunks && System.nanoTime() < deadlineNanos) {
+            Result result = this.finished.poll();
+            if (result == null) {
+                break;
+            }
+            if (result.built != null) {
+                result.chunk.upload(result.built);
+            } else {
+                result.chunk.rebuildNow();
+            }
+            this.waitingSlots.release();
+            this.uploaded++;
+            done++;
+        }
+        boolean more = this.uploaded < this.pending.length;
+        if (!more) {
+            this.parallel = false;
+            this.buildCursor = this.chunks.length;
+        }
+        return more;
+    }
+
+    /** stops the workers early (loading abandoned) */
+    public void cancelParallelBuild() {
+        this.cancelled = true;
+        this.waitingSlots.release(MAX_FINISHED_WAITING);
+    }
+
     public float getBuildProgress() {
+        if (this.parallel) {
+            return this.pending.length == 0 ? 1.0F : (float) this.uploaded / (float) this.pending.length;
+        }
         if (this.chunks.length == 0) {
             return 1.0F;
         }

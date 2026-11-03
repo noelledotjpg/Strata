@@ -8,41 +8,93 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Random;
+import java.util.stream.IntStream;
 
 final class NaturalLevelGenerator {
 
     private NaturalLevelGenerator() {
     }
 
-    static LevelGenerator.Result generate(int width, int height, int depth, long seed) {
+    /**
+     * island = true adds the ocean, lakes, beaches, sea stacks and sea arches (Shoreline) around the land.
+     * island = false is plain inland terrain: grass everywhere, no water, mountains and archways only
+     */
+    static LevelGenerator.Result generate(int width, int height, int depth, long seed, boolean island) {
+        long mark = System.nanoTime();
         byte[] blocks = new byte[width * height * depth];
 
+        WorldGenStatus.set("Raising the land...");
         Random random = new Random(seed);
         int[][] heightMap = buildHeightMap(random, width, height);
-        boolean[][] monolithMask = stampMonoliths(random, heightMap, width, height, depth);
-        Archway archway = findArchwaySite(random, heightMap, width, height);
+        mark = LevelGenerator.lap("height map", mark);
 
+        Shoreline shoreline = null;
+        int seaLevel = Integer.MIN_VALUE;   // no sea, so nothing counts as under water
+
+        if (island) {
+            // ocean, lakes and beaches. this has its own Random, so the land below is the same for a given seed
+            WorldGenStatus.set("Carving coastlines...");
+            shoreline = new Shoreline(seed);
+            shoreline.carve(heightMap, width, height);
+            mark = LevelGenerator.lap("shoreline", mark);
+
+            WorldGenStatus.set("Eroding sea stacks...");
+            shoreline.stampSeaStacks(heightMap, width, height);
+            mark = LevelGenerator.lap("sea stacks", mark);
+
+            seaLevel = Shoreline.SEA_LEVEL;
+        }
+
+        WorldGenStatus.set("Pushing up mountains...");
+
+        boolean[][] monolithMask = stampMonoliths(random, heightMap, width, height, depth, seaLevel);
+        Archway archway = findArchwaySite(random, heightMap, width, height);
+        // assigned once in each branch so the chunk lambda below can capture them
+        final List<Shoreline.Bore> bores;
+        final boolean[][] boreColumns;
+        final byte[][] surface;
+        if (island) {
+            bores = shoreline.bores();
+            boreColumns = shoreline.boreColumns(width, height);
+            surface = shoreline.buildSurface(heightMap, monolithMask, width, height);
+        } else {
+            bores = new ArrayList<>();
+            boreColumns = new boolean[width][height];
+            surface = new byte[width][height];
+            for (int x = 0; x < width; x++) {
+                java.util.Arrays.fill(surface[x], (byte) Tile.GRASS.id);
+            }
+        }
+        mark = LevelGenerator.lap("mountains + surface", mark);
+
+        WorldGenStatus.set("Filling in the ground...");
         int chunkSize = Chunk.SIZE;
         int chunksX = (width + chunkSize - 1) / chunkSize;
         int chunksY = (depth + chunkSize - 1) / chunkSize;
         int chunksZ = (height + chunkSize - 1) / chunkSize;
 
-        for (int chunkX = 0; chunkX < chunksX; chunkX++) {
+        // every chunk column (all the chunks stacked at one x, z) writes its own part of the block array, so they run on all cores
+        IntStream.range(0, chunksX * chunksZ).parallel().forEach(column -> {
+            int chunkX = column / chunksZ;
+            int chunkZ = column % chunksZ;
             for (int chunkY = 0; chunkY < chunksY; chunkY++) {
-                for (int chunkZ = 0; chunkZ < chunksZ; chunkZ++) {
-                    generateChunk(blocks, heightMap, width, height, chunkSize, chunkX, chunkY, chunkZ, depth, archway);
-                }
+                generateChunk(blocks, heightMap, surface, width, height, chunkSize, chunkX, chunkY, chunkZ, depth, archway, bores, boreColumns);
             }
-        }
+        });
+        mark = LevelGenerator.lap("blocks", mark);
 
+        WorldGenStatus.set("Planting trees...");
         List<int[]> multiTileOrigins = new ArrayList<>();
         scatterTrees(random, blocks, heightMap, monolithMask, width, height, depth, multiTileOrigins);
+        mark = LevelGenerator.lap("trees", mark);
 
-        return new LevelGenerator.Result(blocks, multiTileOrigins);
+        int[] waterTops = island ? shoreline.waterTops(heightMap, width, height) : null;
+        return new LevelGenerator.Result(blocks, multiTileOrigins, waterTops);
     }
 
-    private static void generateChunk(byte[] blocks, int[][] heightMap, int width, int height, int chunkSize,
-                                      int chunkX, int chunkY, int chunkZ, int depth, Archway archway) {
+    private static void generateChunk(byte[] blocks, int[][] heightMap, byte[][] surface, int width, int height, int chunkSize,
+                                      int chunkX, int chunkY, int chunkZ, int depth, Archway archway,
+                                      List<Shoreline.Bore> bores, boolean[][] boreColumns) {
         int minX = chunkX * chunkSize;
         int minY = chunkY * chunkSize;
         int minZ = chunkZ * chunkSize;
@@ -54,11 +106,15 @@ final class NaturalLevelGenerator {
         for (int x = minX; x < maxX; x++) {
             for (int z = minZ; z < maxZ; z++) {
                 int groundY = heightMap[x][z];
+                byte surfaceTile = surface[x][z];
                 for (int y = minY; y < maxY; y++) {
                     int index = (y * height + z) * width + x;
-                    byte tile = tileAt(y, groundY);
+                    byte tile = tileAt(y, groundY, surfaceTile);
                     if (tile != 0 && isInsideArchway(archway, x, y, z)) {
                         tile = 0;
+                    }
+                    if (tile != 0 && boreColumns[x][z] && isInsideAnyBore(bores, x, y, z)) {
+                        tile = 0;   // a sea arch
                     }
                     blocks[index] = tile;
                 }
@@ -66,31 +122,44 @@ final class NaturalLevelGenerator {
         }
     }
 
-    private static byte tileAt(int y, int groundY) {
-        if (y < groundY) {
-            return (byte) Tile.COBBLESTONE.id;
+    private static boolean isInsideAnyBore(List<Shoreline.Bore> bores, int x, int y, int z) {
+        for (Shoreline.Bore bore : bores) {
+            if (bore.contains(x, y, z)) {
+                return true;
+            }
         }
-        if (y == groundY) {
-            return (byte) Tile.GRASS.id;
-        }
-        return 0;
+        return false;
     }
 
-    private static final int MONOLITH_MAX_COUNT = 2;
+    private static byte tileAt(int y, int groundY, byte surfaceTile) {
+        if (y > groundY) {
+            return 0;
+        }
+        if (y == groundY) {
+            return surfaceTile;
+        }
+        // sand and gravel go a few blocks deep so a shore doesn't turn to cobblestone the moment you dig it
+        if (surfaceTile != (byte) Tile.GRASS.id && y > groundY - Shoreline.SURFACE_DEPTH) {
+            return surfaceTile;
+        }
+        return (byte) Tile.COBBLESTONE.id;
+    }
 
-    private static final int HUB_RADIUS_MIN = 20;
-    private static final int HUB_RADIUS_MAX = 34;
-    private static final int ARM_COUNT_MIN = 2;
-    private static final int ARM_COUNT_MAX = 4;
-    private static final int ARM_SEGMENTS_MIN = 2;
-    private static final int ARM_SEGMENTS_MAX = 4;
-    private static final float ARM_SEGMENT_SHRINK_MIN = 0.55f;
+    private static final int MONOLITH_MAX_COUNT = 3;
+
+    private static final int HUB_RADIUS_MIN = 72;
+    private static final int HUB_RADIUS_MAX = 90;
+    private static final int ARM_COUNT_MIN = 1;
+    private static final int ARM_COUNT_MAX = 3;
+    private static final int ARM_SEGMENTS_MIN = 1;
+    private static final int ARM_SEGMENTS_MAX = 2;
+    private static final float ARM_SEGMENT_SHRINK_MIN = 0.2f;
     private static final float ARM_SEGMENT_SHRINK_MAX = 0.80f;
-    private static final int ARM_SEGMENT_MIN_RADIUS = 9;
+    private static final int ARM_SEGMENT_MIN_RADIUS = 5;
     private static final float ARM_STEP_OVERLAP = 0.55f;
     private static final float ARM_DRIFT = (float) (Math.PI / 5);
 
-    private static boolean[][] stampMonoliths(Random random, int[][] heightMap, int width, int height, int depth) {
+    private static boolean[][] stampMonoliths(Random random, int[][] heightMap, int width, int height, int depth, int seaLevel) {
         boolean[][] mask = new boolean[width][height];
 
         if (random.nextFloat() < 0.60f) {
@@ -146,6 +215,11 @@ final class NaturalLevelGenerator {
             placedFormations.add(new int[]{hubCx, hubCz});
 
             int hubRadius = HUB_RADIUS_MIN + random.nextInt(HUB_RADIUS_MAX - HUB_RADIUS_MIN + 1);
+            // mountains rise from the island, not from the sea: the hub needs dry land in the middle and all around it
+            if (!isDryLand(heightMap, width, height, hubCx, hubCz, Math.round(hubRadius * 0.9f), seaLevel)) {
+                continue;
+            }
+
             int hubHeight = Level.GROUND_HEIGHT + hubHeightAboveGround + random.nextInt(hubHeightVariance);
             hubHeight = Math.min(hubHeight, depth - topClearance);
             if (hubHeight <= Level.GROUND_HEIGHT) {
@@ -153,7 +227,7 @@ final class NaturalLevelGenerator {
             }
 
             stampLobe(random, heightMap, baseHeightMap, mask, width, height, hubCx, hubCz, hubRadius, hubHeight,
-                    depth, topClearance);
+                    depth, topClearance, seaLevel);
 
             int armCount = ARM_COUNT_MIN + random.nextInt(ARM_COUNT_MAX - ARM_COUNT_MIN + 1);
             for (int a = 0; a < armCount; a++) {
@@ -180,7 +254,7 @@ final class NaturalLevelGenerator {
                     segHeight = Math.min(segHeight, depth - topClearance);
 
                     stampLobe(random, heightMap, baseHeightMap, mask, width, height, Math.round(cx), Math.round(cz),
-                            segRadius, segHeight, depth, topClearance);
+                            segRadius, segHeight, depth, topClearance, seaLevel);
 
                     prevRadius = segRadius;
                     prevHeight = segHeight;
@@ -189,6 +263,20 @@ final class NaturalLevelGenerator {
         }
 
         return mask;
+    }
+
+    // the centre and 8 points around it are all above the sea
+    private static boolean isDryLand(int[][] heightMap, int width, int height, int cx, int cz, int radius, int seaLevel) {
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                int x = Math.max(0, Math.min(width - 1, cx + dx * radius));
+                int z = Math.max(0, Math.min(height - 1, cz + dz * radius));
+                if (heightMap[x][z] < seaLevel) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     private static final int LOBE_EDGE_JITTER = 6;
@@ -201,7 +289,7 @@ final class NaturalLevelGenerator {
 
     private static void stampLobe(Random random, int[][] heightMap, int[][] baseHeightMap, boolean[][] mask,
                                   int width, int height, int cx, int cz, int coreRadius, int baseHeight,
-                                  int depth, int topClearance) {
+                                  int depth, int topClearance, int seaLevel) {
         int facetCount = LOBE_MIN_FACETS + random.nextInt(LOBE_MAX_FACETS - LOBE_MIN_FACETS + 1);
         float[] facetRadius = new float[facetCount];
         for (int f = 0; f < facetCount; f++) {
@@ -218,6 +306,10 @@ final class NaturalLevelGenerator {
                 int x = cx + lx;
                 int z = cz + lz;
                 if (x < 0 || z < 0 || x >= width || z >= height) {
+                    continue;
+                }
+                // arms that reach the shore stop there instead of building rock towers in the water
+                if (baseHeightMap[x][z] < seaLevel) {
                     continue;
                 }
 
@@ -382,8 +474,9 @@ final class NaturalLevelGenerator {
 
         float[][] plainDetailLattice = buildLattice(random, width, height, plainDetailCellSize);
 
+        // every column only reads the lattices and writes its own cell, so the rows run on all cores
         int[][] heightMap = new int[width][height];
-        for (int x = 0; x < width; x++) {
+        IntStream.range(0, width).parallel().forEach(x -> {
             for (int z = 0; z < height; z++) {
                 float plainDetail = sampleLattice(plainDetailLattice, plainDetailCellSize, x, z);
                 float flatHeight = Level.GROUND_HEIGHT + (plainDetail - 0.5f) * 2 * plainDetailAmplitude;
@@ -408,7 +501,7 @@ final class NaturalLevelGenerator {
 
                 heightMap[x][z] = Math.round(lerp(flatHeight, plateauHeight, plateauAmount));
             }
-        }
+        });
 
         return heightMap;
     }

@@ -451,7 +451,11 @@ public class WorldListScreen extends MenuScreen {
         List<String> parts = new ArrayList<>();
 
         if (w.worldType != null) {
-            parts.add(w.worldType == LevelGenerator.WorldType.NATURAL ? "Natural" : "Flat");
+            switch (w.worldType) {
+                case NATURAL: parts.add("Natural"); break;
+                case ISLAND:  parts.add("Island");  break;
+                default:      parts.add("Flat");    break;
+            }
         }
 
         if (w.worldSize != null) {

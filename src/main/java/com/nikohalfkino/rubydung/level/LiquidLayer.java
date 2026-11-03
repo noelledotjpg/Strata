@@ -202,6 +202,28 @@ public final class LiquidLayer {
         }
     }
 
+    /**
+     * fills the grid with the water of a freshly generated world: per column (index z * width + x) the y of the water surface, -1 for a dry column.
+     * each column is filled from there down until a block that fills its cell. cells are written straight into the arrays like load does: no notifications (the level isn't listened to yet) and no waking, so the simulation starts quiet
+     */
+    void fillGenerated(int[] surfaceY, LiquidTile liquid) {
+        byte value = (byte) (liquid.getLiquidIndex() + 1);
+        // every row writes its own cells, so the rows run on all cores
+        java.util.stream.IntStream.range(0, this.height).parallel().forEach(z -> {
+            for (int x = 0; x < this.width; x++) {
+                int top = surfaceY[z * this.width + x];
+                for (int y = Math.min(top, this.depth - 1); y >= 0; y--) {
+                    if (displacesLiquid(Tile.byId(this.level.getTile(x, y, z)))) {
+                        break;
+                    }
+                    int i = index(x, y, z);
+                    this.cells[i] = value;
+                    this.fills[i] = (byte) MAX_FILL;
+                }
+            }
+        });
+    }
+
     /** replaces everything with the saved liquids, false if there is no usable file (nothing is changed then). names that no longer exist are skipped, no notifications */
     boolean load(File file) {
         if (!file.isFile()) {

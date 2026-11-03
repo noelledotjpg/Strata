@@ -43,6 +43,105 @@ public class Textures {
     // per atlas texture id: original pixel width of the image in each slot (same order as buildAtlas's names)
     private static final Map<Integer, int[]> ATLAS_SLOT_WIDTHS = new HashMap<>();
 
+    // per atlas texture id: how its cells are laid out (see AtlasLayout)
+    private static final Map<Integer, AtlasLayout> ATLAS_LAYOUTS = new HashMap<>();
+
+    // Biggest atlas side tried first. Integrated and older GPUs report a bigger limit than they handle well,
+    // so a layout that fits in this is always preferred, and only if none does is the reported limit used.
+    private static final int PREFERRED_MAX_ATLAS_SIZE = 4096;
+
+    /**
+     * where each slot of an atlas sits: the slots fill a grid row by row (slot 0 top left), the grid's cells are
+     * cell x cell pixels, and the whole texture is padded up to a power of two in both directions.
+     *
+     * a single row of slots used to be the layout, which for hundreds of tiles is wider than integrated and older
+     * GPUs can hold (or a size they don't support without power-of-two textures), and the atlas then came out
+     * as an untextured white / black texture
+     */
+    public static final class AtlasLayout {
+        public final int columns;
+        public final int cell;
+        public final int width;
+        public final int height;
+
+        AtlasLayout(int columns, int cell, int width, int height) {
+            this.columns = columns;
+            this.cell = cell;
+            this.width = width;
+            this.height = height;
+        }
+
+        /** texture coordinate u of a point inside the slot's cell, local = 0 at its left edge, 1 at its right edge */
+        public float u(int slot, float local) {
+            return ((slot % this.columns) * this.cell + local * this.cell) / this.width;
+        }
+
+        /** texture coordinate v of a point inside the slot's cell, local = 0 at its top edge, 1 at its bottom edge */
+        public float v(int slot, float local) {
+            return ((slot / this.columns) * this.cell + local * this.cell) / this.height;
+        }
+    }
+
+    /** the layout of an atlas built by buildAtlas, null if atlasId isn't one */
+    public static AtlasLayout getAtlasLayout(int atlasId) {
+        return ATLAS_LAYOUTS.get(atlasId);
+    }
+
+    private static int nextPowerOfTwo(int value) {
+        int result = 1;
+        while (result < value) {
+            result <<= 1;
+        }
+        return result;
+    }
+
+    // true if the driver says it can make an RGBA texture of this size (the proxy texture comes back with width 0 if not)
+    private static boolean supportsTextureSize(int width, int height) {
+        glTexImage2D(GL_PROXY_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, (ByteBuffer) null);
+        return glGetTexLevelParameteri(GL_PROXY_TEXTURE_2D, 0, GL_TEXTURE_WIDTH) != 0;
+    }
+
+    private static AtlasLayout chooseLayout(int slots, int cell) {
+        int reportedMax = glGetInteger(GL_MAX_TEXTURE_SIZE);
+        if (reportedMax <= 0) {
+            reportedMax = 2048;
+        }
+
+        int[] limits = {Math.min(PREFERRED_MAX_ATLAS_SIZE, reportedMax), reportedMax};
+        for (int limit : limits) {
+            AtlasLayout best = null;
+
+            for (int columns = 1; ; columns *= 2) {
+                int usedColumns = Math.min(columns, slots);
+                int rows = (slots + usedColumns - 1) / usedColumns;
+                int width = nextPowerOfTwo(usedColumns * cell);
+                int height = nextPowerOfTwo(rows * cell);
+
+                if (width <= limit && height <= limit && supportsTextureSize(width, height)) {
+                    boolean smaller = best == null
+                            || (long) width * height < (long) best.width * best.height
+                            || ((long) width * height == (long) best.width * best.height
+                            && Math.max(width, height) < Math.max(best.width, best.height));
+                    if (smaller) {
+                        best = new AtlasLayout(usedColumns, cell, width, height);
+                    }
+                }
+
+                if (columns >= slots) {
+                    break;
+                }
+            }
+
+            if (best != null) {
+                return best;
+            }
+        }
+
+        throw new IllegalStateException("The block texture atlas needs " + slots + " textures of " + cell + "x" + cell
+                + " pixels, which does not fit in a texture this graphics card supports (largest side: "
+                + reportedMax + "). Use smaller block textures.");
+    }
+
     /** width of one cell of the atlas texture atlasId in atlas pixels, 0 if it isn't an atlas built here */
     public static int getAtlasCellSize(int atlasId) {
         Integer size = ATLAS_CELL_SIZES.get(atlasId);
@@ -204,7 +303,8 @@ public class Textures {
         }
 
         int[] slotWidths = new int[resourceNames.length];
-        BufferedImage atlas = new BufferedImage(resourceNames.length * cellSize, cellSize, BufferedImage.TYPE_INT_ARGB);
+        AtlasLayout layout = chooseLayout(Math.max(1, resourceNames.length), cellSize);
+        BufferedImage atlas = new BufferedImage(layout.width, layout.height, BufferedImage.TYPE_INT_ARGB);
         Graphics2D graphics = atlas.createGraphics();
 
         graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
@@ -218,7 +318,7 @@ public class Textures {
             int width = images[i].getWidth();
             int factor = Math.max(1, cellSize / width);
             int drawn = width * factor;
-            graphics.drawImage(images[i], i * cellSize, 0, drawn, drawn, null);
+            graphics.drawImage(images[i], (i % layout.columns) * cellSize, (i / layout.columns) * cellSize, drawn, drawn, null);
             ATLAS_EXTENTS.put(resourceNames[i], drawn / (float) cellSize);
             SOURCE_WIDTHS.put(resourceNames[i], width);
             slotWidths[i] = width;
@@ -227,6 +327,7 @@ public class Textures {
         graphics.dispose();
 
         int id = loadTexture(atlas, mode);
+        ATLAS_LAYOUTS.put(id, layout);
         ATLAS_CELL_SIZES.put(id, cellSize);
         ATLAS_SLOT_WIDTHS.put(id, slotWidths);
         return id;

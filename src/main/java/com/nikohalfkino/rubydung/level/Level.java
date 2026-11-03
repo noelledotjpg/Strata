@@ -4,6 +4,7 @@ import com.nikohalfkino.rubydung.level.tiles.DimensionalDoorTile;
 import com.nikohalfkino.rubydung.level.tiles.LiquidTile;
 import com.nikohalfkino.rubydung.level.tiles.Tile;
 import com.nikohalfkino.rubydung.level.generation.LevelGenerator;
+import com.nikohalfkino.rubydung.level.generation.WorldGenStatus;
 import com.nikohalfkino.rubydung.phys.AABB;
 import com.nikohalfkino.rubydung.util.SaveQueue;
 
@@ -57,6 +58,7 @@ public class Level {
     private final Set<MultiTileInstance> multiTiles = new LinkedHashSet<>();
 
     private List<int[]> generatedMultiTiles;
+    private int[] generatedWater;
 
     final ArrayList<LevelListener> levelListeners = new ArrayList<>();
 
@@ -119,23 +121,45 @@ public class Level {
                 : LevelGenerator.generateWorld(type, width, height, depth, seed);
         this.blocks = hasSave ? new byte[width * height * depth] : generated.blocks;
         this.generatedMultiTiles = hasSave ? null : generated.multiTileOrigins;
+        this.generatedWater = hasSave ? null : generated.waterTops;
         this.data = new byte[width * height * depth];
+        WorldGenStatus.set("Preparing the world...");
+        long mark = System.nanoTime();
 
         this.liquids = new LiquidLayer(this, width, depth, height);
 
         this.palette  = TilePalette.fromCurrentRegistry();
         this.lighting = new LevelLighting(this);
+        mark = LevelGenerator.lap("level arrays", mark);
 
+        WorldGenStatus.set("Measuring shadows...");
         this.lighting.calcLightDepths(0, 0, width, height);
+        mark = LevelGenerator.lap("light depths", mark);
 
         if (loadFromDisk) {
             load();
+            LevelGenerator.lap("load", mark);
         } else {
+            WorldGenStatus.set("Flooding the seas...");
             registerMultiTiles(this.generatedMultiTiles);
+            applyGeneratedWater();
+            mark = LevelGenerator.lap("water + objects", mark);
+            WorldGenStatus.set("Lighting lamps...");
             this.lighting.rebuildBlockLight();
+            LevelGenerator.lap("block light", mark);
         }
 
         this.generatedMultiTiles = null;
+        this.generatedWater = null;
+        // what comes next is the loading screen building the chunk meshes
+        WorldGenStatus.set("Building terrain...");
+    }
+
+    /** floods the oceans and lakes of a freshly generated world (nothing to do for loaded or flat worlds) */
+    private void applyGeneratedWater() {
+        if (this.generatedWater != null) {
+            this.liquids.fillGenerated(this.generatedWater, (LiquidTile) Tile.WATER);
+        }
     }
 
     public void load() {
@@ -156,6 +180,7 @@ public class Level {
             registerMultiTiles(WorldManager.loadWorldMultiTiles(this.worldName));
         } else {
             registerMultiTiles(this.generatedMultiTiles);
+            applyGeneratedWater();
         }
 
         if (hasSave) {

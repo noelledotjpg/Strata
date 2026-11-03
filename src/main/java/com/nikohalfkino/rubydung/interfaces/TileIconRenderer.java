@@ -206,12 +206,11 @@ public final class TileIconRenderer {
     }
 
     private static void buildSpriteQuad(Tessellator t, Tile tile, float size, boolean crop) {
-        int slots = Chunk.getTotalAtlasSlots();
         int slot = tile.getAtlasSlot(Tile.FACE_NORTH);
 
-        float slotWidth = 1.0F / slots;
-        float u0 = slot * slotWidth;
-        float uSpan = slotWidth;
+        // all in fractions of the slot's cell (0..1), turned into texture coordinates at the end
+        float u0 = 0.0F;
+        float uSpan = 1.0F;
         float v0 = 0.0F;
         float vSpan = 1.0F;
 
@@ -227,7 +226,7 @@ public final class TileIconRenderer {
                     ? Math.min(SPRITE_CROP_PIXELS, width) / (float) width       // fraction of the sprite shown
                     : 1.0F;
 
-            float spriteU = slotWidth * covered;
+            float spriteU = covered;
             uSpan = spriteU * keep;
             u0 += (spriteU - uSpan) / 2.0F;
 
@@ -235,8 +234,10 @@ public final class TileIconRenderer {
             v0 = (covered - vSpan) * SPRITE_CROP_VERTICAL;
         }
 
-        float u1 = u0 + uSpan;
-        float v1 = v0 + vSpan;
+        float u1 = Chunk.atlasU(slot, u0 + uSpan);
+        float v1 = Chunk.atlasV(slot, v0 + vSpan);
+        u0 = Chunk.atlasU(slot, u0);
+        v0 = Chunk.atlasV(slot, v0);
         float half = size / 2.0F;
 
         t.color(1.0F, 1.0F, 1.0F, 1.0F);

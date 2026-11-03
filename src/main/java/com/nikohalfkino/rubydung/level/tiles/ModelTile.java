@@ -1,6 +1,8 @@
 package com.nikohalfkino.rubydung.level.tiles;
 
+import com.nikohalfkino.rubydung.level.Chunk;
 import com.nikohalfkino.rubydung.level.Level;
+import com.nikohalfkino.rubydung.level.UnderwaterTint;
 import com.nikohalfkino.rubydung.level.tiles.model.BakedModel;
 import com.nikohalfkino.rubydung.level.tiles.model.BakedQuad;
 import com.nikohalfkino.rubydung.level.tiles.model.BlockStateDef;
@@ -202,6 +204,7 @@ public class ModelTile extends Tile {
 
             float shade = emissive ? 1.0F : (quad.shade ? FACE_SHADE[quad.lightFace] : 1.0F);
 
+            float tint = (emissive || fullBright) ? UnderwaterTint.DRY : UnderwaterTint.pack(level, lx, ly, lz);
             float sky = 1.0F;
             if (!emissive && !fullBright) {
                 sky = level.getSkyLight(lx, ly, lz);
@@ -246,11 +249,11 @@ public class ModelTile extends Tile {
                     if (fullBright) {
                         tessellator.color(shade, shade, shade);
                     } else {
-                        tessellator.color(sky, block[v], shade);
+                        tessellator.color(sky, block[v], shade, tint);
                     }
 
-                    float u = (quad.atlasSlot + quad.uvs[v * 2] / 16.0F * quad.atlasExtent) / totalAtlasSlots;
-                    float t = quad.uvs[v * 2 + 1] / 16.0F * quad.atlasExtent;
+                    float u = Chunk.atlasU(quad.atlasSlot, quad.uvs[v * 2] / 16.0F * quad.atlasExtent);
+                    float t = Chunk.atlasV(quad.atlasSlot, quad.uvs[v * 2 + 1] / 16.0F * quad.atlasExtent);
                     tessellator.texture(u, t);
 
                     tessellator.vertex(x + quad.positions[v * 3], y + quad.positions[v * 3 + 1], z + quad.positions[v * 3 + 2]);
@@ -265,11 +268,11 @@ public class ModelTile extends Tile {
                             for (int k = 0; k < 4; k++) {
                                 light += piece.weights[v * 4 + k] * block[k];
                             }
-                            tessellator.color(sky, light, shade);
+                            tessellator.color(sky, light, shade, tint);
                         }
 
-                        float u = (quad.atlasSlot + piece.uv[v * 2] / 16.0F * quad.atlasExtent) / totalAtlasSlots;
-                        float t = piece.uv[v * 2 + 1] / 16.0F * quad.atlasExtent;
+                        float u = Chunk.atlasU(quad.atlasSlot, piece.uv[v * 2] / 16.0F * quad.atlasExtent);
+                        float t = Chunk.atlasV(quad.atlasSlot, piece.uv[v * 2 + 1] / 16.0F * quad.atlasExtent);
                         tessellator.texture(u, t);
 
                         tessellator.vertex(x + piece.pos[v * 3], y + piece.pos[v * 3 + 1], z + piece.pos[v * 3 + 2]);
