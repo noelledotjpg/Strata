@@ -2,6 +2,7 @@ package com.nikohalfkino.rubydung.player;
 
 import com.nikohalfkino.rubydung.audio.SoundEffects;
 import com.nikohalfkino.rubydung.interfaces.hud.HandHud;
+import com.nikohalfkino.rubydung.level.tiles.LiquidTile;
 import com.nikohalfkino.rubydung.level.tiles.Tile;
 
 import java.util.List;
@@ -83,6 +84,11 @@ final class BlockReplacer {
 
         Tile selected = this.ctx.selectedTile;
 
+        if (selected instanceof LiquidTile) {
+            // A liquid hit is already that liquid, nothing to swap. A block is replaced by the liquid.
+            return !hit.liquid && replaceWithLiquid(hit, (LiquidTile) selected);
+        }
+
         this.ctx.aim.aim(hit, hit.cellX, hit.cellY, hit.cellZ);
         int newData = this.placer.axisForFace(hit.face);
         this.ctx.aim.clear();
@@ -103,6 +109,15 @@ final class BlockReplacer {
         }
 
         this.ctx.level.setTile(hit.x, hit.y, hit.z, selected.id, newData);
+        HandHud.swingHeld(HandHud.Action.PLACE);
+        SoundEffects.playRandom("tile_place", 3);
+        return true;
+    }
+
+    // the targeted block (the whole object for a multi-tile one) is removed and its cell gets the liquid
+    private boolean replaceWithLiquid(HitResult hit, LiquidTile liquid) {
+        this.ctx.level.setTile(hit.x, hit.y, hit.z, 0);
+        this.ctx.level.getLiquids().set(hit.x, hit.y, hit.z, liquid);
         HandHud.swingHeld(HandHud.Action.PLACE);
         SoundEffects.playRandom("tile_place", 3);
         return true;

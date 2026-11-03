@@ -3,6 +3,7 @@ package com.nikohalfkino.rubydung.player;
 import com.nikohalfkino.rubydung.audio.SoundEffects;
 import com.nikohalfkino.rubydung.interfaces.hud.HandHud;
 import com.nikohalfkino.rubydung.level.SubTilePlacement;
+import com.nikohalfkino.rubydung.level.tiles.LiquidTile;
 import com.nikohalfkino.rubydung.level.tiles.RotatableTile;
 import com.nikohalfkino.rubydung.level.tiles.Tile;
 import com.nikohalfkino.rubydung.phys.AABB;
@@ -188,6 +189,16 @@ final class BlockPlacer {
 
         if (!this.ctx.inWorld(x, y, z)) {
             return false;
+        }
+
+        // 0. A liquid goes in the liquid layer of the cell next to the face, next to whatever block is there
+        // (a slab, a stair...). a full block in the cell refuses it. the player never blocks it.
+        if (selected instanceof LiquidTile) {
+            boolean placed = this.ctx.level.getLiquids().set(x, y, z, (LiquidTile) selected);
+            if (placed) {
+                notePlaced(hit, x, y, z);
+            }
+            return placed;
         }
 
         // 1. Complete a half slab.

@@ -30,7 +30,9 @@ final class HitTracker {
 
     void set(HitResult hitResult) {
         // Exact hit point, box and face on partial blocks (slabs, stairs), before anything uses the hit.
-        TilePicker.refine(this.level, hitResult);
+        if (hitResult != null && !hitResult.liquid) {
+            TilePicker.refine(this.level, hitResult);
+        }
         this.hitResult = hitResult;
 
         if (hitResult == null) {
@@ -59,6 +61,6 @@ final class HitTracker {
     private static boolean sameHit(HitResult a, HitResult b) {
         return a.x == b.x && a.y == b.y && a.z == b.z
                 && a.cellX == b.cellX && a.cellY == b.cellY && a.cellZ == b.cellZ
-                && a.face == b.face && a.overlayId == b.overlayId;
+                && a.face == b.face && a.overlayId == b.overlayId && a.liquid == b.liquid;
     }
 }

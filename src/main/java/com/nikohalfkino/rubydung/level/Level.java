@@ -1,6 +1,7 @@
 package com.nikohalfkino.rubydung.level;
 
 import com.nikohalfkino.rubydung.level.tiles.DimensionalDoorTile;
+import com.nikohalfkino.rubydung.level.tiles.LiquidTile;
 import com.nikohalfkino.rubydung.level.tiles.Tile;
 import com.nikohalfkino.rubydung.level.generation.LevelGenerator;
 import com.nikohalfkino.rubydung.phys.AABB;
@@ -61,6 +62,9 @@ public class Level {
 
     private final SubTiles subTiles = new SubTiles(this);
 
+    // the liquid of every cell, separate from the block array so a block can share a cell with it
+    private final LiquidLayer liquids;
+
     public boolean hasSavedPosition = false;
     public double savedPlayerX, savedPlayerY, savedPlayerZ;
     public float savedPlayerYRotation, savedPlayerXRotation;
@@ -117,6 +121,8 @@ public class Level {
         this.generatedMultiTiles = hasSave ? null : generated.multiTileOrigins;
         this.data = new byte[width * height * depth];
 
+        this.liquids = new LiquidLayer(this, width, depth, height);
+
         this.palette  = TilePalette.fromCurrentRegistry();
         this.lighting = new LevelLighting(this);
 
@@ -154,6 +160,7 @@ public class Level {
 
         if (hasSave) {
             this.subTiles.restore(WorldManager.loadWorldSubTiles(this.worldName));
+            this.liquids.load(liquidFile());
         }
 
         this.lighting.calcLightDepths(0, 0, this.width, this.height);
@@ -212,6 +219,7 @@ public class Level {
         WorldManager.saveWorldPalette(this.worldName, this.palette);
         WorldManager.saveWorldMultiTiles(this.worldName, collectMultiTileOrigins());
         WorldManager.saveWorldSubTiles(this.worldName, this.subTiles.snapshot());
+        this.liquids.save(liquidFile());
         WorldManager.saveWorldType(this.worldName, this.type);
         DoorRegistry.save(this.worldName, getDoors());
         return encodedBlocks;
@@ -313,6 +321,22 @@ public class Level {
         return this.subTiles;
     }
 
+    public LiquidLayer getLiquids() {
+        return this.liquids;
+    }
+
+    private File liquidFile() {
+        return new File(WorldManager.levelFile(this.worldName).getPath() + ".liquids");
+    }
+
+    // a liquid was added, removed or swapped. only the chunk mesh needs to know: liquids neither block
+    // light nor shade the cells under them
+    void liquidChanged(int x, int y, int z, LiquidTile oldLiquid, LiquidTile newLiquid) {
+        for (LevelListener levelListener : this.levelListeners) {
+            levelListener.tileChanged(x, y, z);
+        }
+    }
+
     void subTilesChanged(int x, int y, int z) {
         this.lighting.calcLightDepths(x, z, 1, 1);
         for (LevelListener levelListener : this.levelListeners) {
@@ -387,6 +411,11 @@ public class Level {
         }
 
         Tile newTile = Tile.byId(id & 0xFF);
+        if (newTile instanceof LiquidTile) {
+            // a liquid goes in the liquid layer, next to whatever block is in the cell
+            this.liquids.set(x, y, z, (LiquidTile) newTile);
+            return;
+        }
         if (newTile != null && newTile.isMultiTile()) {
             placeMultiTile(newTile, x, y, z, data);
             return;
@@ -402,6 +431,9 @@ public class Level {
 
     private void setBlock(int x, int y, int z, int id, int data, boolean oldWasPart, boolean newIsPart) {
         Tile incoming = Tile.byId(id & 0xFF);
+        if (LiquidLayer.displacesLiquid(incoming)) {
+            this.liquids.clear(x, y, z);   // a block that fills the cell replaces the liquid in it
+        }
         if (incoming != null && incoming != Tile.AIR && this.subTiles.has(x, y, z)) {
             this.subTiles.removeOverlapping(x, y, z, incoming, incoming.getOccupancyBoxes(x, y, z, data));
         }

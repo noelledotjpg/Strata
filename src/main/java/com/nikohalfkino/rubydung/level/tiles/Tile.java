@@ -69,6 +69,11 @@ public class Tile {
     public static final Tile LAMP              = TileRegistry.LAMP;
     public static final Tile LAMPPOST          = TileRegistry.LAMPPOST;
 
+    public static final Tile WATER             = TileRegistry.WATER;
+    public static final Tile LAVA              = TileRegistry.LAVA;
+    public static final Tile ACID              = TileRegistry.ACID;
+    public static final Tile SLUDGE            = TileRegistry.SLUDGE;
+
     public static final Tile TREE_SAPLING      = TileRegistry.TREE_SAPLING;
     public static final Tile TREE_MEDIUM       = TileRegistry.TREE_MEDIUM;
     public static final Tile TREE_LARGE        = TileRegistry.TREE_LARGE;
@@ -80,7 +85,7 @@ public class Tile {
     public static List<Tile> getTiles()          { return TileRegistry.getTiles(); }
     public static List<Tile> getCycleOrder()     { return TileRegistry.getCycleOrder(); }
 
-public final int id;
+    public final int id;
     public final String name;
 
     private final String[] faceTextures   = new String[6];
@@ -107,7 +112,7 @@ public final int id;
     private int footprintY = 1;
     private int footprintZ = 1;
 
-public Tile(String name) {
+    public Tile(String name) {
         this(name, name);
     }
 

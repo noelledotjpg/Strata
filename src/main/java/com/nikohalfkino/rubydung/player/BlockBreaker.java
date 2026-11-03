@@ -116,7 +116,7 @@ final class BlockBreaker {
 
     private boolean breakTargetedTile() {
         HitResult hit = this.hitTracker.current();
-        if (hit != null && this.ctx.hasTarget(hit)) {
+        if (hit != null && stillThere(hit)) {
             breakAt(hit);
             return true;
         }
@@ -143,7 +143,7 @@ final class BlockBreaker {
             if (broken >= allowance) {
                 break;
             }
-            if (!this.ctx.hasTarget(hit)) {
+            if (!stillThere(hit)) {
                 continue; // already gone
             }
             breakAt(hit);
@@ -152,7 +152,21 @@ final class BlockBreaker {
         return broken;
     }
 
+    // a block (or sub-tile) is still in the targeted cell, or for a liquid hit the liquid is
+    private boolean stillThere(HitResult hit) {
+        if (hit.liquid) {
+            return this.ctx.level.getLiquids().has(hit.x, hit.y, hit.z);
+        }
+        return this.ctx.hasTarget(hit);
+    }
+
     private void breakAt(HitResult hit) {
+        if (hit.liquid) {
+            // The player holds this liquid's tile: breaking takes the liquid out of the cell.
+            SoundEffects.playRandom("tile_break", 3);
+            this.ctx.level.getLiquids().clear(hit.x, hit.y, hit.z);
+            return;
+        }
         breakPart(hit);
         fillFreedHalf(hit.x, hit.y, hit.z);
     }

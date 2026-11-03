@@ -2,9 +2,11 @@ package com.nikohalfkino.rubydung.level;
 
 import com.nikohalfkino.rubydung.player.HitResult;
 import com.nikohalfkino.rubydung.level.tiles.BillboardTile;
+import com.nikohalfkino.rubydung.level.tiles.LiquidTile;
 import com.nikohalfkino.rubydung.level.tiles.Tile;
 import com.nikohalfkino.rubydung.phys.AABB;
 import com.nikohalfkino.rubydung.render.Frustum;
+import com.nikohalfkino.rubydung.render.LiquidShader;
 import com.nikohalfkino.rubydung.render.Tessellator;
 import com.nikohalfkino.rubydung.render.TerrainShader;
 import com.nikohalfkino.rubydung.render.Textures;
@@ -82,6 +84,66 @@ public class LevelRenderer implements LevelListener {
             }
         } finally {
             TerrainShader.unbind();
+        }
+    }
+
+    /**
+     * draws the liquids of every visible chunk, after the opaque terrain (and before the billboards)
+     *
+     * blended and double sided (you see the surface from below too). liquid faces are translucent and come in no
+     * particular order, so it is done in two passes: first only the depth of all liquid faces, then the colour
+     * where a face is the nearest one. every pixel is blended exactly once, with the surface you actually see,
+     * whatever the draw order was (no faces vanishing behind others, no darker double layers).
+     * state is put back as it was found
+     */
+    public void renderLiquids() {
+        Frustum frustum = Frustum.getFrustum();
+
+        boolean blend = glIsEnabled(GL_BLEND);
+        boolean alphaTest = glIsEnabled(GL_ALPHA_TEST);
+        boolean cull = glIsEnabled(GL_CULL_FACE);
+        boolean depthMask = glGetBoolean(GL_DEPTH_WRITEMASK);
+        int depthFunc = glGetInteger(GL_DEPTH_FUNC);
+
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glDisable(GL_ALPHA_TEST);
+        glDisable(GL_CULL_FACE);
+
+        LiquidShader.bind(this.level.getSkyAmbient());
+        try {
+            // pass 1: depth only
+            glDepthMask(true);
+            glColorMask(false, false, false, false);
+            drawLiquidChunks(frustum);
+
+            // pass 2: colour, only where a liquid face is the nearest one
+            glColorMask(true, true, true, true);
+            glDepthMask(false);
+            glDepthFunc(GL_LEQUAL);
+            drawLiquidChunks(frustum);
+        } finally {
+            glColorMask(true, true, true, true);
+            glDepthFunc(depthFunc);
+            glDepthMask(depthMask);
+            LiquidShader.unbind();
+            if (cull) {
+                glEnable(GL_CULL_FACE);
+            }
+            if (alphaTest) {
+                glEnable(GL_ALPHA_TEST);
+            }
+            if (!blend) {
+                glDisable(GL_BLEND);
+            }
+        }
+    }
+
+    private void drawLiquidChunks(Frustum frustum) {
+        for (Chunk chunk : this.chunks) {
+            if (chunk.hasLiquid() && frustum.cubeInFrustum(chunk.boundingBox)) {
+                chunk.render(Chunk.LAYER_LIQUID);
+            }
         }
     }
 
@@ -281,6 +343,10 @@ public class LevelRenderer implements LevelListener {
      * the blink needs the camera yaw, without it the billboard's box is outlined
      */
     public void renderHit(HitResult hitResult, float cameraYaw) {
+        if (hitResult.liquid) {
+            renderLiquidHit(hitResult);
+            return;
+        }
         TilePicker.refine(this.level, hitResult);
 
         Tile tile = Tile.byId(this.level.getTile(hitResult.x, hitResult.y, hitResult.z));
@@ -317,6 +383,35 @@ public class LevelRenderer implements LevelListener {
         glDepthMask(true);
         glDisable(GL_POLYGON_OFFSET_FILL);
 
+        glDisable(GL_BLEND);
+    }
+
+    // the targeted liquid: the hit face of its cell, up to the liquid's surface
+    private void renderLiquidHit(HitResult hit) {
+        LiquidTile liquid = this.level.getLiquids().get(hit.x, hit.y, hit.z);
+        if (liquid == null) {
+            return;
+        }
+        float top = liquid.getSurfaceY(this.level, hit.x, hit.y, hit.z);
+        float pulse = (float) Math.sin(System.currentTimeMillis() / 100.0) * 0.2f + 0.4f;
+
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_CURRENT_BIT);
+        glColor4f(1.0f, 1.0f, 1.0f, pulse);
+        glEnable(GL_POLYGON_OFFSET_FILL);
+        glPolygonOffset(-2.0F, -4.0F);
+        glDepthMask(false);
+
+        int[] normal = HIT_FACE_NORMALS[hit.face];
+        glPushMatrix();
+        glTranslatef(normal[0] * HIT_FACE_NUDGE, normal[1] * HIT_FACE_NUDGE, normal[2] * HIT_FACE_NUDGE);
+        this.tessellator.init();
+        renderBoxFace(hit.x, hit.y, hit.z, hit.x + 1.0F, top, hit.z + 1.0F, hit.face);
+        this.tessellator.flush();
+        glPopMatrix();
+
+        glDepthMask(true);
+        glDisable(GL_POLYGON_OFFSET_FILL);
         glDisable(GL_BLEND);
     }
 

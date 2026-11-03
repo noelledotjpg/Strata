@@ -1,5 +1,6 @@
 package com.nikohalfkino.rubydung.level;
 
+import com.nikohalfkino.rubydung.level.tiles.LiquidTile;
 import com.nikohalfkino.rubydung.level.tiles.Tile;
 import com.nikohalfkino.rubydung.phys.AABB;
 import com.nikohalfkino.rubydung.render.Tessellator;
@@ -15,6 +16,10 @@ import static org.lwjgl.opengl.GL11.*;
 public class Chunk {
 
     public static final int SIZE = 16;
+
+    // display lists per chunk: 0 = fully lit terrain, 1 = shadowed terrain, 2 = liquids (own shader, blended)
+    public static final int LAYER_LIQUID = 2;
+    private static final int LAYERS = 3;
 
     private static final int TEXTURE;
     private static final int TOTAL_ATLAS_SLOTS;
@@ -67,6 +72,9 @@ public class Chunk {
 
     private boolean priority = false;
 
+    // whether the liquid list has anything in it, so chunks without liquid cost nothing in that pass
+    private boolean hasLiquid = false;
+
     private final List<int[]> billboardPositions = new ArrayList<>();
 
     public List<int[]> getBillboardPositions() {
@@ -86,14 +94,14 @@ public class Chunk {
         this.maxY = maxY;
         this.maxZ = maxZ;
 
-        this.lists = glGenLists(2);
+        this.lists = glGenLists(LAYERS);
 
         this.boundingBox = new AABB(minX, minY, minZ, maxX, maxY, maxZ);
 
     }
 
     public void rebuild(int layer) {
-        if (rebuiltThisFrame >= 2 && !this.priority) {
+        if (rebuiltThisFrame >= LAYERS && !this.priority) {
             return;
         }
 
@@ -109,16 +117,27 @@ public class Chunk {
         this.dirty = false;
         buildList(0);
         buildList(1);
+        buildList(LAYER_LIQUID);
     }
 
     public boolean isDirty() {
         return this.dirty;
     }
 
+    public boolean hasLiquid() {
+        return this.hasLiquid;
+    }
+
     private void buildList(int layer) {
+        boolean liquidLayer = layer == LAYER_LIQUID;
+        boolean liquidFound = false;
+
         glNewList(this.lists + layer, GL_COMPILE);
-        glEnable(GL_TEXTURE_2D);
-        Textures.bind(TEXTURE);
+        if (!liquidLayer) {
+            // liquids don't use the atlas, LiquidShader makes their look
+            glEnable(GL_TEXTURE_2D);
+            Textures.bind(TEXTURE);
+        }
         TESSELLATOR.init();
 
         if (layer == 0) {
@@ -129,8 +148,23 @@ public class Chunk {
             for (int y = this.minY; y < this.maxY; ++y) {
                 for (int z = this.minZ; z < this.maxZ; ++z) {
                     int blockId = this.level.getTile(x, y, z);
+
+                    if (liquidLayer) {
+                        // this list only holds liquids (from the level's liquid layer, so a block may share the cell),
+                        // everything else (sub-tiles included) belongs to layers 0 and 1
+                        LiquidTile liquid = this.level.getLiquids().get(x, y, z);
+                        if (liquid != null) {
+                            liquid.renderLiquid(TESSELLATOR, this.level, x, y, z);
+                            liquidFound = true;
+                        }
+                        continue;
+                    }
+
                     if (blockId != 0) {
                         Tile tile = Tile.byId(blockId);
+                        if (tile instanceof LiquidTile) {
+                            tile = null;   // liquids live in the liquid layer, never draw one as a block
+                        }
                         if (tile != null) {
                             if (tile.isBillboard()) {
                                 if (layer == 0 && !this.level.isMultiTilePart(x, y, z)) {
@@ -166,14 +200,21 @@ public class Chunk {
         }
 
         TESSELLATOR.flush();
-        glDisable(GL_TEXTURE_2D);
+        if (!liquidLayer) {
+            glDisable(GL_TEXTURE_2D);
+        }
         glEndList();
+
+        if (liquidLayer) {
+            this.hasLiquid = liquidFound;
+        }
     }
 
     public void render(int layer) {
         if (this.dirty) {
             rebuild(0);
             rebuild(1);
+            rebuild(LAYER_LIQUID);
             if (!this.dirty) {
                 this.priority = false;
             }
@@ -192,6 +233,6 @@ public class Chunk {
     }
 
     public void dispose() {
-        glDeleteLists(this.lists, 2);
+        glDeleteLists(this.lists, LAYERS);
     }
 }

@@ -29,6 +29,9 @@ public class HitResult {
     /** part of the tile that was struck, world coordinates: the whole cell for a cube, the slab itself, one step of a staircase. null when unknown (the overlay falls back to the tile's outline box) */
     public AABB hitBox;
 
+    /** the ray struck the liquid in this cell, not a block (only when the player holds that liquid, see LiquidRaycaster). x/y/z are the cell, breaking it clears the liquid */
+    public boolean liquid;
+
     /** which SubTile of the cell was struck (SubTile.id), -1 for the cell's normal tile. x/y/z are the cell either way */
     public int overlayId = -1;
 

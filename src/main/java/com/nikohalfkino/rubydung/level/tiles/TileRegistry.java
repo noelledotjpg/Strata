@@ -90,6 +90,50 @@ public final class TileRegistry {
             new LamppostTile("lamppost").setLightRadius(10.0F)
     );
 
+    public static final Tile WATER = register(
+            new LiquidTile("water")
+                    .setColor(0.10F, 0.30F, 0.80F, 0.68F)
+                    .setFoam(1.0F, 1.0F, 1.0F, 1.0F)
+                    .setWarp(0.125F)
+                    .setFlowSpeed(1.0F)
+                    .setWaveHeight(0.03F)
+                    .setViscosity(0.6F)
+    );
+
+    public static final Tile LAVA = register(
+            new LiquidTile("lava")
+                    .setColor(1.00F, 0.38F, 0.05F, 1.0F)
+                    .setFoam(0.12F, 0.03F, 0.01F, 1.0F)
+                    .setNoFoam()
+                    .setWarp(0.20F)
+                    .setFlowSpeed(0.35F)
+                    .setWaveHeight(0.012F)
+                    .setViscosity(4.0F)
+                    .setLightRadius(12.0F)
+    );
+
+    public static final Tile ACID = register(
+            new LiquidTile("acid")
+                    .setColor(0.35F, 0.85F, 0.12F, 0.78F)
+                    .setFoam(0.85F, 1.0F, 0.45F, 1.0F)
+                    .setNoFoam()
+                    .setWarp(0.16F)
+                    .setFlowSpeed(0.8F)
+                    .setWaveHeight(0.02F)
+                    .setViscosity(0.9F)
+    );
+
+    public static final Tile SLUDGE = register(
+            new LiquidTile("sludge")
+                    .setColor(0.30F, 0.26F, 0.12F, 1.0F)
+                    .setFoam(0.45F, 0.40F, 0.20F, 1.0F)
+                    .setNoFoam()
+                    .setWarp(0.10F)
+                    .setFlowSpeed(0.25F)
+                    .setWaveHeight(0.01F)
+                    .setViscosity(5.0F)
+    );
+
     public static final Tile TREE_SAPLING = register(
             new TreeTile("tree_sapling", TreeTile.TreeType.SAPLING)
     );

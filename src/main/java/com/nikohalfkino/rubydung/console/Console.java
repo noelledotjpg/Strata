@@ -39,6 +39,7 @@ public class Console {
         register(new TimeCommand());
         register(new FreecamCommand());
         register(new SingCommand());
+        register(new LiquidCommand());
 
         println("Type 'help' for a list of commands.");
     }

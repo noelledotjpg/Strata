@@ -1,0 +1,62 @@
+#version 120
+// MAX_LIQUIDS is #defined by LiquidShader.java (keep in sync with LiquidTile.MAX_LIQUIDS)
+
+uniform float time;
+uniform vec4 liqColor[MAX_LIQUIDS];
+uniform vec4 liqFoam[MAX_LIQUIDS];
+uniform vec4 liqMotion[MAX_LIQUIDS];
+uniform vec4 liqSheet[MAX_LIQUIDS];   // x = columns, y = rows of the texture sheet
+
+varying vec3  vWorld;
+varying vec2  vCell;
+varying vec3  vLight;
+varying vec4  vBase;
+varying vec4  vFoam;
+varying vec4  vMotion;
+varying vec2  vSheet;
+varying vec4  vEdges;
+varying vec4  vCorners;
+varying vec2  vPane;         // a pane runs along x / along z through this cell
+varying float vTop;
+varying float vFoamWeight;   // 0..1 (from 0..3)
+varying float vLiqIndex;
+
+float bit(float v, float n) {
+    return mod(floor(v / pow(2.0, n)), 2.0);
+}
+
+// packed alpha layout, written by LiquidTile.pack():
+//   bits 0-3 edge mask, 4-7 corner mask, 8 top face, 9 surface vertex,
+//   10-11 foam weight, 12-14 liquid index, 15 pane along x, 16 pane along z
+void main() {
+    float allBits     = floor(gl_Color.a * 131072.0 + 0.5);
+    float paneF       = floor(allBits / 32768.0);
+    float packedBits  = allBits - paneF * 32768.0;
+    float indexF      = floor(packedBits / 4096.0);
+    float remaining   = packedBits - indexF * 4096.0;
+    float foamWeightF = floor(remaining / 1024.0);
+    float flags       = remaining - foamWeightF * 1024.0;
+    int   index       = int(indexF + 0.5);
+
+    vBase       = liqColor[index];
+    vFoam       = liqFoam[index];
+    vMotion     = liqMotion[index];
+    vSheet      = liqSheet[index].xy;
+    vEdges      = vec4(bit(flags, 0.0), bit(flags, 1.0), bit(flags, 2.0), bit(flags, 3.0));
+    vCorners    = vec4(bit(flags, 4.0), bit(flags, 5.0), bit(flags, 6.0), bit(flags, 7.0));
+    vTop        = bit(flags, 8.0);
+    vPane       = vec2(bit(paneF, 0.0), bit(paneF, 1.0));
+    float surfV = bit(flags, 9.0);
+    vFoamWeight = foamWeightF / 3.0;
+    vLiqIndex   = indexF;
+
+    vec4 p = gl_Vertex;
+    float t = time * vMotion.y;
+    float swell = 0.5 + 0.25 * sin(p.x * 1.9 + t * 1.3) + 0.25 * sin(p.z * 2.3 + p.x * 0.7 + t * 1.1);
+    p.y += surfV * vMotion.z * (swell - 1.0);
+
+    vWorld      = p.xyz;
+    vCell       = gl_MultiTexCoord0.st;
+    vLight      = gl_Color.rgb;
+    gl_Position = gl_ModelViewProjectionMatrix * p;
+}

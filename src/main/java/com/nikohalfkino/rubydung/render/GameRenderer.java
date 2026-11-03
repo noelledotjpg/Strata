@@ -9,6 +9,9 @@ import com.nikohalfkino.rubydung.interfaces.Screen;
 import com.nikohalfkino.rubydung.interfaces.hud.FpsHud;
 import com.nikohalfkino.rubydung.interfaces.screen.ConsoleScreen;
 import com.nikohalfkino.rubydung.level.LevelRenderer;
+import com.nikohalfkino.rubydung.level.LiquidRaycaster;
+import com.nikohalfkino.rubydung.level.tiles.LiquidTile;
+import com.nikohalfkino.rubydung.level.tiles.Tile;
 import com.nikohalfkino.rubydung.level.VoxelRaycaster;
 import com.nikohalfkino.rubydung.player.Player;
 import com.nikohalfkino.rubydung.player.PlayerInteraction;
@@ -34,6 +37,8 @@ public class GameRenderer {
     private final PixelationFilter pixelation = new PixelationFilter();
     private final PlayerCamera playerCamera = new PlayerCamera();
     private final PlayerRenderer playerRenderer = new PlayerRenderer();
+
+    private long lastFrameNanos = System.nanoTime();
 
     private static final float FOG_START = -10.0F;
     private static final float FOG_END = 120.0F;
@@ -120,6 +125,14 @@ public class GameRenderer {
             // Ambient is applied to terrain by TerrainShader at draw time (and to billboards per frame).
             this.game.getLevel().setSkyAmbient(cycle.getAmbient());
 
+            // Liquids flow in real time, except while a screen (pause menu, inventory) is open.
+            long now = System.nanoTime();
+            float frameSeconds = Math.min((now - this.lastFrameNanos) * 1.0E-9F, 0.25F);
+            this.lastFrameNanos = now;
+            if (this.game.getCurrentScreen() == null) {
+                this.game.getLevel().getLiquids().update(frameSeconds);
+            }
+
             // The world is drawn into the frame's viewport; without a frame (closed, or window
             // too small) it fills the whole window.
             int viewWidth = width;
@@ -180,6 +193,9 @@ public class GameRenderer {
 
             glEnable(GL_TEXTURE_2D);
             levelRenderer.render(1);
+
+            // after all opaque terrain: the liquids blend over it
+            levelRenderer.renderLiquids();
 
             // Before the billboards, so those behind the player are hidden by it.
             this.playerRenderer.render(this.game.getLevel(), player, this.playerCamera, cameraPartialTicks);
@@ -252,6 +268,17 @@ public class GameRenderer {
 
         HitResult hitResult = VoxelRaycaster.raycast(
                 this.game.getLevel(), eyeX, eyeY, eyeZ, dirX, dirY, dirZ, REACH_DISTANCE);
+
+        // Liquids aren't blocks: holding a liquid's tile makes that liquid targetable (to break it or
+        // build against it) when it lies before the block the ray hit.
+        Tile selected = playerInteraction.getSelectedTile();
+        if (selected instanceof LiquidTile) {
+            HitResult liquidHit = LiquidRaycaster.raycast(this.game.getLevel(), eyeX, eyeY, eyeZ,
+                    dirX, dirY, dirZ, REACH_DISTANCE, (LiquidTile) selected, hitResult);
+            if (liquidHit != null) {
+                hitResult = liquidHit;
+            }
+        }
 
         playerInteraction.setHitResult(hitResult);
     }
