@@ -1,8 +1,10 @@
 package com.nikohalfkino.rubydung.level;
 
+import com.nikohalfkino.rubydung.level.tiles.BillboardTile;
 import com.nikohalfkino.rubydung.level.tiles.LiquidTile;
 import com.nikohalfkino.rubydung.level.tiles.Tile;
 import com.nikohalfkino.rubydung.phys.AABB;
+import com.nikohalfkino.rubydung.render.BillboardMesh;
 import com.nikohalfkino.rubydung.render.Tessellator;
 import com.nikohalfkino.rubydung.render.Textures;
 
@@ -17,9 +19,13 @@ public class Chunk {
 
     public static final int SIZE = 16;
 
-    // display lists per chunk: 0 = fully lit terrain, 1 = shadowed terrain, 2 = liquids (own shader, blended)
+    // display lists per chunk: 0 = terrain (every face, the shader lights each vertex), 1 = unused (was the shadowed faces), 2 = liquids (own shader, blended)
     public static final int LAYER_LIQUID = 2;
-    private static final int LAYERS = 3;
+    // the chunk's sprites as static geometry for StaticBillboardShader (see BillboardMesh)
+    public static final int LAYER_BILLBOARD = 3;
+    // the sprites whose texture has no partly transparent pixels: drawn as cut-outs, before the blended ones
+    public static final int LAYER_BILLBOARD_CUTOUT = 4;
+    private static final int LAYERS = 5;
 
     private static final int TEXTURE;
     private static final Textures.AtlasLayout ATLAS_LAYOUT;
@@ -62,6 +68,10 @@ public class Chunk {
 
     public static int rebuiltThisFrame;
     public static int updates;
+
+    // bumped whenever a chunk changes in a way LevelRenderer's list of chunks worth looking at depends on (dirty, has geometry,
+    // has sprites), so that list is only rebuilt when something changed instead of every frame. GL thread only, like the chunks
+    public static int activeVersion = 0;
 
     private final Level level;
 
@@ -151,6 +161,8 @@ public class Chunk {
         private final boolean[] empty;
         private List<int[]> billboards = new ArrayList<>();
         private boolean liquidFound = false;
+        private BillboardMesh billboardMesh;
+        private BillboardMesh billboardCutoutMesh;
 
         @SuppressWarnings("unchecked")
         private Built(Chunk chunk) {
@@ -180,17 +192,22 @@ public class Chunk {
     /** GL thread only: compiles the display lists from a finished build */
     public void upload(Built built) {
         for (int layer = 0; layer < LAYERS; layer++) {
+            // Only the draw calls live in the list: the atlas is bound (and GL_TEXTURE_2D enabled) once per pass by
+            // LevelRenderer, instead of once per chunk and layer, which made every list replay a texture bind.
             glNewList(this.lists + layer, GL_COMPILE);
             if (!built.empty[layer]) {
-                if (layer != LAYER_LIQUID) {
-                    glEnable(GL_TEXTURE_2D);
-                    Textures.bind(TEXTURE);
-                }
-                for (Tessellator.Mesh mesh : built.meshes[layer]) {
-                    Tessellator.draw(mesh);
-                }
-                if (layer != LAYER_LIQUID) {
-                    glDisable(GL_TEXTURE_2D);
+                if (layer == LAYER_BILLBOARD) {
+                    if (built.billboardMesh != null) {
+                        built.billboardMesh.draw();
+                    }
+                } else if (layer == LAYER_BILLBOARD_CUTOUT) {
+                    if (built.billboardCutoutMesh != null) {
+                        built.billboardCutoutMesh.draw();
+                    }
+                } else {
+                    for (Tessellator.Mesh mesh : built.meshes[layer]) {
+                        Tessellator.draw(mesh);
+                    }
                 }
             }
             glEndList();
@@ -208,6 +225,7 @@ public class Chunk {
         // changed while this was being built on a worker? then it is already out of date: stay dirty so it is built again,
         // otherwise the stale mesh (wrong light on some blocks) would stay until the next block update nearby
         this.dirty = built.version != this.version;
+        activeVersion++;
     }
 
     public float getFadeProgress() {
@@ -222,6 +240,12 @@ public class Chunk {
     }
 
     private static boolean hasMeshes(Built built, int layer) {
+        if (layer == LAYER_BILLBOARD) {
+            return !built.empty[layer] && built.billboardMesh != null && !built.billboardMesh.isEmpty();
+        }
+        if (layer == LAYER_BILLBOARD_CUTOUT) {
+            return !built.empty[layer] && built.billboardCutoutMesh != null && !built.billboardCutoutMesh.isEmpty();
+        }
         return !built.empty[layer] && built.meshes[layer] != null && !built.meshes[layer].isEmpty();
     }
 
@@ -239,6 +263,11 @@ public class Chunk {
         return this.dirty;
     }
 
+    /** whether the chunk has sprites in its built billboard list (see LevelRenderer.renderBillboards) */
+    public boolean hasBillboards() {
+        return this.layerHasGeometry[LAYER_BILLBOARD] || this.layerHasGeometry[LAYER_BILLBOARD_CUTOUT];
+    }
+
     public boolean hasLiquid() {
         return this.hasLiquid;
     }
@@ -252,7 +281,7 @@ public class Chunk {
         for (int y = this.minY; y < this.maxY; y++) {
             for (int z = this.minZ; z < this.maxZ; z++) {
                 for (int x = this.minX; x < this.maxX; x++) {
-                    if (this.level.getTile(x, y, z) != 0 || liquids.has(x, y, z)
+                    if (this.level.getTile(x, y, z) != 0 || liquids.hasStored(x, y, z)
                             || (checkSubTiles && this.level.getSubTiles().has(x, y, z))) {
                         allAir = false;
                         break scan;
@@ -280,7 +309,7 @@ public class Chunk {
                                 && tile.isSolid() && !tile.isTransparent() && tile.occludesNeighbours();
                         opaque[id] = (byte) (plain ? 1 : 2);
                     }
-                    if (opaque[id] != 1 || liquids.has(x, y, z)) {
+                    if (opaque[id] != 1 || liquids.hasStored(x, y, z)) {
                         return false;
                     }
                 }
@@ -289,8 +318,38 @@ public class Chunk {
         return true;
     }
 
+    // the sprites found by the terrain pass (layer 0, which always runs first), as one static mesh
+    private void computeBillboards(Built built) {
+        BillboardMesh blended = new BillboardMesh();
+        BillboardMesh cutouts = new BillboardMesh();
+        for (int[] pos : built.billboards) {
+            Tile tile = Tile.byId(this.level.getTile(pos[0], pos[1], pos[2]));
+            if (tile instanceof BillboardTile) {
+                BillboardTile sprite = (BillboardTile) tile;
+                sprite.emitStatic(sprite.isTranslucent() ? blended : cutouts, this.level, pos[0], pos[1], pos[2]);
+            }
+        }
+        built.billboardMesh = blended;
+        built.billboardCutoutMesh = cutouts;
+    }
+
     private void computeLayer(Built built, int layer, Tessellator tessellator) {
+        if (layer == LAYER_BILLBOARD) {
+            computeBillboards(built);   // makes the cut-out sprites' mesh too
+            return;
+        }
+        if (layer == LAYER_BILLBOARD_CUTOUT) {
+            return;
+        }
+        if (layer == 1) {
+            // terrain is one list now (layer 0 draws lit and shadowed faces alike, see Tile.LAYER_ALL): the shader lights each
+            // vertex itself, so the second list only cost a second shader bind and a second pass over the chunks
+            built.empty[layer] = true;
+            return;
+        }
         boolean liquidLayer = layer == LAYER_LIQUID;
+        // what the tiles are told: the terrain list takes every face
+        int tileLayer = layer == 0 ? Tile.LAYER_ALL : layer;
 
         tessellator.beginCapture();
         tessellator.init();
@@ -301,7 +360,8 @@ public class Chunk {
                     int blockId = this.level.getTile(x, y, z);
 
                     if (liquidLayer) {
-                        LiquidTile liquid = this.level.getLiquids().get(x, y, z);
+                        // only liquid stored in cells: the ocean is one live plane drawn by OceanSurface
+                        LiquidTile liquid = this.level.getLiquids().getStored(x, y, z);
                         if (liquid != null) {
                             liquid.renderLiquid(tessellator, this.level, x, y, z);
                             built.liquidFound = true;
@@ -322,7 +382,7 @@ public class Chunk {
                                 continue;
                             }
                             int direction = this.level.getData(x, y, z);
-                            tile.render(tessellator, this.level, layer, x, y, z, TOTAL_ATLAS_SLOTS, direction);
+                            tile.render(tessellator, this.level, tileLayer, x, y, z, TOTAL_ATLAS_SLOTS, direction);
                         }
                     }
 
@@ -337,7 +397,7 @@ public class Chunk {
                             float lo = clip == SubTile.CLIP_BOTTOM ? y : y + 0.5F;
                             tessellator.setClipY(y, y + 1.0F, lo + subTile.oy, lo + 0.5F + subTile.oy);
                         }
-                        shared.render(tessellator, this.level, layer, x, y, z, TOTAL_ATLAS_SLOTS,
+                        shared.render(tessellator, this.level, tileLayer, x, y, z, TOTAL_ATLAS_SLOTS,
                                 SubTile.baseData(subTile.data));
                         tessellator.clearClip();
                         tessellator.clearOffset();
@@ -350,26 +410,44 @@ public class Chunk {
         built.meshes[layer] = tessellator.endCapture();
     }
 
-    public void render(int layer) {
+    /**
+     * the display list to call for a layer, or -1 when there is nothing to draw. Rebuilds the chunk first if it is dirty
+     * (within the frame's budget). The caller binds the atlas; LevelRenderer batches the ids into one glCallLists.
+     */
+    public int getList(int layer) {
         if (this.dirty) {
             rebuildIfAllowed();
         }
+        return this.layerHasGeometry[layer] ? this.lists + layer : -1;
+    }
 
-        if (!this.layerHasGeometry[layer]) {
+    /** draws one layer on its own, binding the atlas itself. LevelRenderer uses getList and batches instead. */
+    public void render(int layer) {
+        int list = getList(layer);
+        if (list < 0) {
             return;
         }
-        glCallList(this.lists + layer);
+        if (layer != LAYER_LIQUID) {
+            glEnable(GL_TEXTURE_2D);
+            Textures.bind(TEXTURE);
+        }
+        glCallList(list);
+        if (layer != LAYER_LIQUID) {
+            glDisable(GL_TEXTURE_2D);
+        }
     }
 
     public void setDirty() {
         this.dirty = true;
         this.version++;
+        activeVersion++;
     }
 
     public void setDirtyNow() {
         this.dirty = true;
         this.version++;
         this.priority = true;
+        activeVersion++;
     }
 
     public void dispose() {

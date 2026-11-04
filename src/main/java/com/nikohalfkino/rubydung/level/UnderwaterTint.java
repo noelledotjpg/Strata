@@ -5,10 +5,17 @@ import com.nikohalfkino.rubydung.level.tiles.LiquidTile;
 /**
  * how much liquid lies over a terrain face, packed into the vertex alpha for TerrainShader (keep the two in sync).
  *
- * the depth is the liquid above the cell in front of the face: its own fill plus every liquid cell stacked directly over it, in eighths
- * of a block (LiquidLayer.MAX_FILL per block). the liquid's own colour and opacity tint and darken the face, so the deeper the water, the darker the sea floor
+ * two kinds of value, both packed / PACK_RANGE, and exactly 1.0 means "no liquid", which is what every other vertex already writes:
  *
- * packed = (liquidIndex * 256 + eighths) / 2048, and exactly 1.0 means "no liquid", which is what every other vertex already writes
+ *   STORED liquid (flowing / poured / another liquid): p = liquidIndex * 256 + eighths, always below OCEAN_BASE.
+ *     the depth is the liquid above the cell in front of the face: its own fill plus every liquid cell stacked directly over it,
+ *     in eighths of a block (LiquidLayer.MAX_FILL per block)
+ *
+ *   OCEAN: p = OCEAN_BASE + wetFrom * 512 + cellY. nothing about the current sea height is baked in: the cell is under the sea
+ *     once seaHeight > wetFrom (LiquidLayer.oceanWetFrom) and its depth is seaHeight - cellY. the shader gets seaHeight and the
+ *     ocean's liquid as uniforms, so moving the sea needs no chunk to be rebuilt
+ *
+ * the liquid's own colour and opacity tint and darken the face, so the deeper the water, the darker the sea floor
  */
 public final class UnderwaterTint {
 
@@ -16,7 +23,8 @@ public final class UnderwaterTint {
     public static final float DRY = 1.0F;
 
     private static final int MAX_EIGHTHS = 255;
-    private static final float PACK_RANGE = 2048.0F;
+    private static final float PACK_RANGE = 524288.0F;
+    private static final int OCEAN_BASE = 2048;
 
     private UnderwaterTint() {
     }
@@ -24,6 +32,12 @@ public final class UnderwaterTint {
     /** the alpha for a face whose open side is the cell (x, y, z) */
     public static float pack(Level level, int x, int y, int z) {
         LiquidLayer liquids = level.getLiquids();
+
+        int wetFrom = liquids.oceanWetFrom(x, y, z);
+        if (wetFrom >= 0) {
+            return (OCEAN_BASE + Math.min(wetFrom, 511) * 512 + Math.min(y, 511)) / PACK_RANGE;
+        }
+
         LiquidTile liquid = liquids.get(x, y, z);
         if (liquid == null) {
             return DRY;

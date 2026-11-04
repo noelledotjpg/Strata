@@ -154,6 +154,38 @@ public class Textures {
         return widths == null || slot < 0 || slot >= widths.length ? 0 : widths[slot];
     }
 
+    private static final Map<String, Boolean> PARTIAL_ALPHA = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * whether any pixel of a texture (a slice is named "path@col,row", as in the atlas) is neither fully opaque nor fully transparent,
+     * read from the source image. such a texture needs blending, one without can be drawn as a cut-out. true when it can't be read.
+     * safe to call from the chunk build workers
+     */
+    public static boolean hasPartialAlpha(String resourceName) {
+        Boolean known = PARTIAL_ALPHA.get(resourceName);
+        if (known != null) {
+            return known;
+        }
+        boolean partial = false;
+        try {
+            BufferedImage image = readAtlasImage(resourceName, new HashMap<>());
+            scan:
+            for (int y = 0; y < image.getHeight(); y++) {
+                for (int x = 0; x < image.getWidth(); x++) {
+                    int alpha = image.getRGB(x, y) >>> 24;
+                    if (alpha != 0 && alpha != 255) {
+                        partial = true;
+                        break scan;
+                    }
+                }
+            }
+        } catch (RuntimeException e) {
+            partial = true;
+        }
+        PARTIAL_ALPHA.put(resourceName, partial);
+        return partial;
+    }
+
     /** original pixel width of an atlas texture, 0 if the atlas hasn't been built with it yet */
     public static int getSourceWidth(String resourceName) {
         Integer width = SOURCE_WIDTHS.get(resourceName);

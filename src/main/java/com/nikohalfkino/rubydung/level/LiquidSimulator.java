@@ -2,92 +2,99 @@ package com.nikohalfkino.rubydung.level;
 
 import com.nikohalfkino.rubydung.level.tiles.LiquidTile;
 
-import java.util.Arrays;
 import java.util.BitSet;
 
 /**
- * moves the liquid of a LiquidLayer around. every liquid cell holds a fill (1..MAX_FILL).
- * ordinary liquid is conserved: nothing is created or destroyed by flowing. the one exception are
- * "infinite" liquids (LiquidTile.isInfinite, e.g. water), see below.
+ * moves the liquid of a LiquidLayer around. a cell holds a liquid and a fill (1..MAX_FILL):
  *
- * one tick, for every active cell, bottom to top:
- *   1. fall: as much as fits goes into the cell below
- *   2. spread: the cell levels out with ALL its lower side neighbours at once (it shares its liquid evenly
- *      with them), so a pile flattens quickly and without a preferred direction. neighbours end up
- *      differing by 1 or less, and liquid runs over an edge into any hole it meets
- *   3. a cell that received liquid is not processed again in the same tick, so it flows at a steady speed
- *   (between 2 and 3) level the body: see below
+ *   fill MAX_FILL (8)  a SOURCE. permanent: it never changes by itself, only a player (or a block) removes it
+ *   fill 1..7          FLOWING liquid. it only exists because something feeds it, and it goes away when that stops
  *
- * LEVELLING A BODY
- * the local rules above leave slopes behind (they stop at a difference of 1 unit per cell) and know nothing
- * about pressure. so after the local rules every active cell also levels the whole body it belongs to:
- *   - a STACK is a vertical run of the same liquid in one column that rests on something. all its cells below
- *     the top one are full. a falling stream (partly filled cells, or nothing under it) is not a stack
- *   - stacks in neighbouring columns that have liquid on a common layer are connected (communicating vessels)
- *   - the liquid of all connected stacks is poured out again from the bottom up: one water level for the
- *     whole body, every stack filled up to it, limited by its floor and by the first block above it. so a
- *     tower of liquid on a pool sinks into it, a deep column and a shallow one end at the same height, and
- *     leftover units go to the stacks that already have the most. nothing is created or destroyed
- *   - bodies of more than LEVEL_MAX_STACKS columns are left to the local rules
+ * nothing is conserved, so there is no volume to pile up: liquid that runs into an ocean just meets sources and
+ * stops, it can never raise the ocean. that is the whole point of this model (it works like minecraft's)
  *
- * INFINITE BODIES
- * an infinite liquid that is connected to at least getInfiniteBodySize() cells of itself counts as a big
- * body (an ocean). in a big body:
- *   - the body has a sea level: the highest layer that is reasonably wide (see SURFACE_SHARE)
- *   - cells at sea level that rest on full liquid are kept full: holes next to the surface get filled
- *     from an endless supply, and the surface stays flat
- *   - liquid that ends up above sea level on top of the body is absorbed (deleted), so pouring more
- *     liquid in does not make a bulge. liquid resting on solid ground (a pond on a cliff, a thin film
- *     running over a beach) is never touched
- * a body that is smaller than the size limit behaves like normal conserved liquid
+ * every cell works out for itself what it should hold, from its neighbours only ("pull", no pushing):
+ *   - a liquid cell above feeds this cell: it holds FALL_LEVEL (7), a falling stream
+ *   - a side neighbour feeds this cell one level less than it holds (a source offers 7, a level 5 offers 4...), so a
+ *     source reaches 7 cells over flat ground. a flowing cell only spreads sideways when it rests on something
+ *     solid: over a hole (air, or more of its own liquid) it is a falling stream and just falls
+ *   - nothing feeds it: it is empty
+ *   - liquids never mix: a cell keeps the liquid it has, and only an empty cell can be taken by another one
+ *   - an INFINITE liquid (LiquidTile.isInfinite, water) with 2 or more source neighbours on its sides, resting on a
+ *     solid block or on a source, becomes a source itself. so a hole dug into an ocean fills up again, and a
+ *     pond made of 2 sources never runs dry
+ *   - flowing liquid is never put on top of a source of the same liquid (no skin of water over the ocean). a falling
+ *     stream may still end on one, it is just one cell that goes away with the stream
+ *   every feed goes down in height or down in level, never in a circle, so when a source is taken away the liquid
+ *   it fed always drains completely (it can't keep itself alive)
  *
- * only cells that changed (and their neighbours) are active, still liquid costs nothing. because the simulator
- * can't hear about blocks being placed or broken, a sweep re-checks the liquid cells, and
- * LiquidLayer.wake(x, y, z) can be called for an instant reaction
+ * EVENT DRIVEN: nothing is ever scanned. a cell is looked at only when it is woken: when its own liquid changed,
+ * when a neighbour's did, or when LiquidLayer.wake is called (Level calls it for every block placed or removed). a cell
+ * that changes wakes its neighbours, so a change spreads outwards as a wave and then dies out. a world at rest
+ * costs nothing: no active cells, update() returns at once
  *
- * NEAR THE PLAYER FIRST (setFocus)
- *   - the sweep works in chunks of 16x16 columns, ordered by distance to the focus (the player). the chunks
- *     within NEAR_CHUNK_RADIUS are re-checked every few ticks, the rest of the level slowly in the
- *     background, nearest first. so on a huge level the water around the player reacts at once and far away
- *     water is only looked at when there is time
- *   - if more than getMaxStepsPerTick() cells are active at once, the ones nearest to the focus are
- *     processed first and the others wait for a later tick
+ * COST IS BOUNDED: per tick at most getMaxStepsPerTick() cells are looked at, and one update() (one frame) never
+ * spends more than FRAME_BUDGET_NANOS in total. what doesn't fit simply stays queued for the next frame
  *
  * thick liquids (LiquidTile.getViscosity) just act less often: every round(viscosity) ticks
- * liquids never mix: a liquid doesn't flow into a cell holding another liquid
+ *
+ * THE OCEAN is not stored per cell, so the raw cells / fills arrays can't see it. every read here goes through
+ * LiquidLayer.typeAt / fillAt, which answer for stored liquid and ocean alike. plain ocean cells are inexhaustible
+ * sources: they never lose anything, and they only feed the cells of their own region (holes and partial cells), so a hole
+ * dug in the sea fills up again and the sea never floods the land beside it. liquid poured onto the sea joins it
+ *
+ * FINITE MODE (isFinite, on by default, switch with `liquid finite`): everything above describes the infinite model.
+ * in finite mode liquid is conserved and fill 8 is just a full cell, not a source. a liquid cell pushes its units
+ * to the cell below while that has room, then evens itself out with lower side neighbours (a move only happens when
+ * the difference is 2 or more, so a surface rests with steps of at most 1 and never oscillates). liquids still never mix.
+ * liquid in a cell that gets a full block is moved to a free neighbour (above first), only what doesn't fit is lost
  */
 public final class LiquidSimulator {
 
     private static volatile boolean enabled = true;
     private static volatile float ticksPerSecond = 10.0F;
-    private static volatile int infiniteBodySize = 256;
+    private static volatile int maxStepsPerTick = 20000;
+    private static volatile boolean finite = true;
 
     public static boolean isEnabled() { return enabled; }
     public static void setEnabled(boolean on) { enabled = on; }
     public static float getTicksPerSecond() { return ticksPerSecond; }
     public static void setTicksPerSecond(float tps) { ticksPerSecond = tps; }
 
-    /** how many connected cells of an infinite liquid make a body "big" (infinite). */
-    public static int getInfiniteBodySize() { return infiniteBodySize; }
-    public static void setInfiniteBodySize(int cells) { infiniteBodySize = Math.max(2, cells); }
+    /**
+     * FINITE mode: liquid is conserved. nothing is a permanent source, a cell just holds 0..MAX_FILL units and units
+     * move between cells (down first, then sideways towards lower neighbours). digging a hole in an ocean takes the
+     * water from the ocean, and a bucket of water poured out stays a bucket of water.
+     * off = the old minecraft-like model (permanent sources, flowing liquid that drains)
+     */
+    public static boolean isFinite() { return finite; }
+    public static void setFinite(boolean on) { finite = on; }
 
-    private static final int MAX_TICKS_PER_UPDATE = 5;
-    private static volatile int maxStepsPerTick = 40000;
-
-    /** most active cells that are processed in one tick, the nearest to the focus go first */
+    /** most cells looked at in one tick (the rest wait in the queue) */
     public static int getMaxStepsPerTick() { return maxStepsPerTick; }
     public static void setMaxStepsPerTick(int cells) { maxStepsPerTick = Math.max(1, cells); }
 
-    private static final int CHUNK = 16;                    // sweep chunk: 16x16 columns, full height
-    private static final int NEAR_CHUNK_RADIUS = 6;         // chunks (96 blocks) around the focus swept often
-    private static final int NEAR_SWEEP_CELLS = 1 << 19;    // cells looked at per tick in the near zone
-    private static final int FAR_SWEEP_CELLS = 1 << 18;     // ... and in the rest of the level
-    private static final int DIST_BUCKETS = 8192;
-    private static final int[][] SIDES = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+    /** @deprecated bodies aren't analysed any more (sources decide what is infinite), kept so callers still compile */
+    @Deprecated
+    public static int getInfiniteBodySize() { return 0; }
 
-    // a layer of a big body counts as its sea level when it holds at least 1/SURFACE_SHARE of the cells of the
-    // widest layer. a bulge on top of the water is far smaller than that, so it counts as "above sea level"
-    private static final int SURFACE_SHARE = 4;
+    /** @deprecated see getInfiniteBodySize, does nothing */
+    @Deprecated
+    public static void setInfiniteBodySize(int cells) { }
+
+    /** @deprecated nothing is swept near the player any more, does nothing */
+    @Deprecated
+    public void setFocus(int x, int y, int z) { }
+
+    private static final int MAX_TICKS_PER_UPDATE = 3;
+    private static final long FRAME_BUDGET_NANOS = 3_000_000L;     // 3 ms of simulation per frame at most
+
+    private static final int SOURCE = LiquidLayer.MAX_FILL;
+    private static final int FALL_LEVEL = SOURCE - 1;
+
+    // side neighbours, in the order of `sides`: -x, +x, -z, +z
+    private static final int[] SIDE_DX = {-1, 1, 0, 0};
+    private static final int[] SIDE_DZ = {0, 0, -1, 1};
 
     private final LiquidLayer layer;
     private final byte[] cells;
@@ -95,45 +102,16 @@ public final class LiquidSimulator {
     private final int width, depth, height;
     private final int layerSize;       // cells in one horizontal layer (the index step for one block up)
 
-    private final BitSet active = new BitSet();
-    private final BitSet touched = new BitSet();
+    // the cells waiting to be looked at: a FIFO ring (power of two size) and a bit per cell so none is queued twice
+    private final BitSet queued = new BitSet();
+    private int[] queue = new int[1 << 12];
+    private int head, size;
+
     private float accumulator;
     private long tickCount;
+    private boolean lastFinite = finite;        // to notice a mode switch
 
-    // near-the-player sweep
-    private final int chunksX, chunksZ;
-    private int[] chunkOrder = new int[0];                   // chunk ids, nearest to the focus first
-    private int nearChunks;                                  // how many of them are in the near zone
-    private int nearCursor, farCursor;
-    private int orderChunkX = Integer.MIN_VALUE, orderChunkZ = Integer.MIN_VALUE;
-    private volatile int focusX, focusY, focusZ;
-    private int rotation;
-
-    // results of the big body analysis, valid for one tick only
-    private final BitSet checked = new BitSet();   // cell was analysed this tick
-    private final BitSet big = new BitSet();       // ... and belongs to a big body
-    private final BitSet excess = new BitSet();    // ... and lies above the sea level of that body
-    private final BitSet surface = new BitSet();   // ... and lies exactly at sea level
-    private final BitSet visited = new BitSet();   // scratch for the flood fill
-    private final int[] layerCount;
-    private int[] queue = new int[0];
-
-    // scratch for spreading, avoids allocating in the hot path
-    private final int[] spreadTo = new int[4];
-    private final int[] spreadRoom = new int[4];
-
-    // body levelling: the most columns of one body that are levelled as one piece
-    private static final int LEVEL_MAX_STACKS = 1024;
-    private final BitSet leveled = new BitSet();      // cells of bodies already handled this tick
-    private final BitSet levelSeen = new BitSet();    // scratch: bottom cells of the stacks found so far
-    private int stackCount;
-    private final int[] stCol = new int[LEVEL_MAX_STACKS];       // index of the column (z * width + x)
-    private final int[] stBottomIdx = new int[LEVEL_MAX_STACKS]; // cell index of the lowest cell
-    private final int[] stB = new int[LEVEL_MAX_STACKS];         // lowest layer
-    private final int[] stT = new int[LEVEL_MAX_STACKS];         // top layer (the only one that may be partial)
-    private final int[] stCap = new int[LEVEL_MAX_STACKS];       // first layer above that can't hold liquid
-    private final int[] stAmount = new int[LEVEL_MAX_STACKS];    // units in the stack now
-    private final int[] stTarget = new int[LEVEL_MAX_STACKS];    // units it gets
+    private final int[] sides = new int[4];     // scratch: indices of the 4 side neighbours, -1 outside the level
 
     LiquidSimulator(LiquidLayer layer, byte[] cells, byte[] fills, int width, int depth, int height) {
         this.layer = layer;
@@ -143,29 +121,25 @@ public final class LiquidSimulator {
         this.depth = depth;
         this.height = height;
         this.layerSize = width * height;
-        this.layerCount = new int[depth];
-        this.chunksX = (width + CHUNK - 1) / CHUNK;
-        this.chunksZ = (height + CHUNK - 1) / CHUNK;
-        this.focusX = width / 2;
-        this.focusY = depth / 2;
-        this.focusZ = height / 2;
     }
 
-    /**
-     * where the player is (block coordinates). call it every frame before update(): the sweep and the
-     * processing order start from here. without a call the centre of the level is used.
-     */
-    public void setFocus(int x, int y, int z) {
-        this.focusX = x;
-        this.focusY = y;
-        this.focusZ = z;
+    // what a cell really holds, ocean included (the raw arrays only hold what differs from plain ocean)
+    private byte type(int i) {
+        return this.layer.typeAt(i);
     }
+
+    private int fill(int i) {
+        return this.layer.fillAt(i);
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // waking
 
     int activeCount() {
-        return this.active.cardinality();
+        return this.size;
     }
 
-    /** marks the cell and its 6 neighbours to be looked at on the next tick */
+    /** looks at the cell and its 6 neighbours on the next tick, if there is any liquid around to react to */
     void wake(int x, int y, int z) {
         wakeIndex((y * this.height + z) * this.width + x);
     }
@@ -176,636 +150,418 @@ public final class LiquidSimulator {
         int z = rest % this.height;
         int y = rest / this.height;
 
-        this.active.set(i);
-        if (x > 0) this.active.set(i - 1);
-        if (x < this.width - 1) this.active.set(i + 1);
-        if (z > 0) this.active.set(i - this.width);
-        if (z < this.height - 1) this.active.set(i + this.width);
-        if (y > 0) this.active.set(i - this.layerSize);
-        if (y < this.depth - 1) this.active.set(i + this.layerSize);
+        if (!liquidNear(i, x, y, z)) {
+            return;                       // dry surroundings: a block placed in a dry place costs nothing
+        }
+        push(i);
+        pushNeighbours(i, x, y, z);
+    }
+
+    private boolean liquidNear(int i, int x, int y, int z) {
+        return type(i) != 0
+                || (x > 0 && type(i - 1) != 0)
+                || (x < this.width - 1 && type(i + 1) != 0)
+                || (z > 0 && type(i - this.width) != 0)
+                || (z < this.height - 1 && type(i + this.width) != 0)
+                || (y > 0 && type(i - this.layerSize) != 0)
+                || (y < this.depth - 1 && type(i + this.layerSize) != 0);
+    }
+
+    private void pushNeighbours(int i, int x, int y, int z) {
+        if (x > 0) push(i - 1);
+        if (x < this.width - 1) push(i + 1);
+        if (z > 0) push(i - this.width);
+        if (z < this.height - 1) push(i + this.width);
+        if (y > 0) push(i - this.layerSize);
+        if (y < this.depth - 1) push(i + this.layerSize);
+    }
+
+    /** after a load: flowing liquid with nothing feeding it (saved by the older simulation) gets one look and drains */
+    void wakeUnsettled() {
+        for (int i = 0; i < this.cells.length; i++) {
+            if (this.cells[i] != 0 && (this.fills[i] & 0xFF) < SOURCE) {
+                push(i);
+            }
+        }
+    }
+
+    private void push(int i) {
+        if (this.queued.get(i)) {
+            return;
+        }
+        this.queued.set(i);
+        if (this.size == this.queue.length) {
+            grow();
+        }
+        this.queue[(this.head + this.size) & (this.queue.length - 1)] = i;
+        this.size++;
+    }
+
+    private int pop() {
+        int i = this.queue[this.head];
+        this.head = (this.head + 1) & (this.queue.length - 1);
+        this.size--;
+        this.queued.clear(i);
+        return i;
+    }
+
+    private void grow() {
+        int[] bigger = new int[this.queue.length << 1];
+        for (int k = 0; k < this.size; k++) {
+            bigger[k] = this.queue[(this.head + k) & (this.queue.length - 1)];
+        }
+        this.queue = bigger;
+        this.head = 0;
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // time
+
+    // switching to infinite: partial cells have no source behind them any more, so give each one a look and let it drain.
+    // switching to finite needs nothing, a world at rest is already at rest
+    private void syncMode() {
+        boolean now = finite;
+        if (now != this.lastFinite) {
+            this.lastFinite = now;
+            if (!now) {
+                wakeUnsettled();
+            }
+        }
     }
 
     void update(float seconds) {
+        syncMode();
         if (!enabled || ticksPerSecond <= 0.0F) {
             this.accumulator = 0.0F;
             return;
         }
         float interval = 1.0F / ticksPerSecond;
+        if (this.size == 0) {
+            this.accumulator = interval;      // at rest: the next wake gets its first tick on the very next frame
+            return;
+        }
+
         this.accumulator += seconds;
+        long deadline = System.nanoTime() + FRAME_BUDGET_NANOS;
         int ran = 0;
-        while (this.accumulator >= interval && ran < MAX_TICKS_PER_UPDATE) {
-            tick();
+        while (this.accumulator >= interval && ran < MAX_TICKS_PER_UPDATE && this.size > 0) {
+            tick(deadline, true);
             this.accumulator -= interval;
             ran++;
+            if (System.nanoTime() >= deadline) {
+                break;
+            }
         }
-        if (ran == MAX_TICKS_PER_UPDATE) {
-            this.accumulator = 0.0F;     // too slow to keep up, don't build up a backlog
+        if (this.accumulator > interval) {
+            this.accumulator = interval;      // behind: slow down, never build up a backlog
         }
     }
 
     void stepNow(int ticks) {
-        for (int k = 0; k < ticks; k++) {
-            tick();
+        syncMode();
+        for (int k = 0; k < ticks && this.size > 0; k++) {
+            tick(0L, false);
         }
     }
 
-    private void tick() {
+    // looks at the cells that were queued when the tick began. cells woken meanwhile go to the back and wait for
+    // the next tick, so a change moves one cell per tick, at a steady speed
+    private void tick(long deadline, boolean timed) {
         this.tickCount++;
-        sweep();
-        this.touched.clear();
-        this.leveled.clear();
-        this.checked.clear();
-        this.big.clear();
-        this.excess.clear();
-        this.surface.clear();
-
-        int count = this.active.cardinality();
-        if (count == 0) {
-            return;
-        }
-        int[] list = new int[count];
-        int n = 0;
-        for (int i = this.active.nextSetBit(0); i >= 0; i = this.active.nextSetBit(i + 1)) {
-            list[n++] = i;
-        }
-        this.active.clear();
-
-        int limit = maxStepsPerTick;
-        if (n > limit) {
-            n = nearestFirst(list, n, limit);
-        }
-
-        this.rotation = (this.rotation + 1) & 3;
+        int n = Math.min(this.size, maxStepsPerTick);
         for (int k = 0; k < n; k++) {
-            step(list[k]);
-        }
-    }
-
-    // keeps the `limit` active cells nearest to the focus (still in index order, so bottom to top) and puts
-    // the rest back into the active set for a later tick. returns how many are left in the list
-    private int nearestFirst(int[] list, int n, int limit) {
-        int fx = this.focusX, fy = this.focusY, fz = this.focusZ;
-        int[] bucketOf = new int[n];
-        int[] hist = new int[DIST_BUCKETS];
-        for (int k = 0; k < n; k++) {
-            int i = list[k];
-            double dx = i % this.width - fx;
-            double dz = (i / this.width) % this.height - fz;
-            double dy = i / this.layerSize - fy;
-            int b = (int) Math.min(DIST_BUCKETS - 1, Math.sqrt(dx * dx + dy * dy + dz * dz));
-            bucketOf[k] = b;
-            hist[b]++;
-        }
-        int cutoff = 0, taken = 0;
-        while (cutoff < DIST_BUCKETS && taken + hist[cutoff] <= limit) {
-            taken += hist[cutoff++];
-        }
-        int spare = limit - taken;                           // cells taken from the cutoff distance
-        int m = 0;
-        for (int k = 0; k < n; k++) {
-            int i = list[k];
-            int b = bucketOf[k];
-            if (b < cutoff || (b == cutoff && spare > 0 && spare-- > 0)) {
-                list[m++] = i;
-            } else {
-                this.active.set(i);
+            if (timed && (k & 63) == 63 && System.nanoTime() >= deadline) {
+                break;                        // out of time: the rest stays at the front of the queue
             }
-        }
-        return m;
-    }
-
-    // looks at the chunks around the focus every few ticks, and the rest of the level slowly, for liquid that
-    // should be moving but isn't being watched
-    private void sweep() {
-        int fcx = Math.max(0, Math.min(this.chunksX - 1, this.focusX / CHUNK));
-        int fcz = Math.max(0, Math.min(this.chunksZ - 1, this.focusZ / CHUNK));
-        if (fcx != this.orderChunkX || fcz != this.orderChunkZ) {
-            rebuildChunkOrder(fcx, fcz);
-        }
-
-        int chunkCells = CHUNK * CHUNK * this.depth;
-        int farChunks = this.chunkOrder.length - this.nearChunks;
-        int nearPerTick = Math.min(this.nearChunks, Math.max(1, NEAR_SWEEP_CELLS / chunkCells));
-        int farPerTick = Math.min(farChunks, Math.max(1, FAR_SWEEP_CELLS / chunkCells));
-
-        for (int k = 0; k < nearPerTick && this.nearChunks > 0; k++) {
-            sweepChunk(this.chunkOrder[this.nearCursor]);
-            this.nearCursor = (this.nearCursor + 1) % this.nearChunks;
-        }
-        for (int k = 0; k < farPerTick && farChunks > 0; k++) {
-            sweepChunk(this.chunkOrder[this.nearChunks + this.farCursor]);
-            this.farCursor = (this.farCursor + 1) % farChunks;
-        }
-    }
-
-    // sorts all chunks by distance to the chunk of the focus (only when the focus changes chunk)
-    private void rebuildChunkOrder(int fcx, int fcz) {
-        int total = this.chunksX * this.chunksZ;
-        long[] keys = new long[total];
-        for (int c = 0; c < total; c++) {
-            long dx = c % this.chunksX - fcx;
-            long dz = c / this.chunksX - fcz;
-            keys[c] = ((dx * dx + dz * dz) << 32) | c;
-        }
-        Arrays.sort(keys);
-        int[] order = new int[total];
-        int near = 0;
-        long nearLimit = (long) NEAR_CHUNK_RADIUS * NEAR_CHUNK_RADIUS;
-        for (int k = 0; k < total; k++) {
-            order[k] = (int) keys[k];
-            if ((keys[k] >> 32) <= nearLimit) {
-                near++;
-            }
-        }
-        this.chunkOrder = order;
-        this.nearChunks = near;
-        this.nearCursor = near == 0 ? 0 : this.nearCursor % near;
-        int far = total - near;
-        this.farCursor = far == 0 ? 0 : this.farCursor % far;
-        this.orderChunkX = fcx;
-        this.orderChunkZ = fcz;
-    }
-
-    private void sweepChunk(int chunk) {
-        int x0 = (chunk % this.chunksX) * CHUNK;
-        int z0 = (chunk / this.chunksX) * CHUNK;
-        int x1 = Math.min(this.width, x0 + CHUNK);
-        int z1 = Math.min(this.height, z0 + CHUNK);
-        for (int y = 0; y < this.depth; y++) {
-            for (int z = z0; z < z1; z++) {
-                int row = (y * this.height + z) * this.width;
-                for (int x = x0; x < x1; x++) {
-                    int i = row + x;
-                    byte type = this.cells[i];
-                    if (type == 0 || this.active.get(i)) {
-                        continue;
-                    }
-                    if (unstable(i, type)) {
-                        this.active.set(i);
-                    }
-                }
-            }
-        }
-    }
-
-    private boolean unstable(int i, byte type) {
-        int x = i % this.width;
-        int rest = i / this.width;
-        int z = rest % this.height;
-        int y = rest / this.height;
-
-        if (!this.layer.passable(x, y, z)) {
-            return true;                                   // a block now fills this cell, step() removes the liquid
-        }
-        if (y > 0 && room(i - this.layerSize, x, y - 1, z, type) > 0) {
-            return true;
-        }
-        int f = this.fills[i] & 0xFF;
-        if (f < LiquidLayer.MAX_FILL && y > 0 && this.cells[i - this.layerSize] == type
-                && LiquidTile.byIndex(type - 1).isInfinite()) {
-            return true;                                   // maybe a surface cell of a big body that needs topping up
-        }
-        boolean covered = y < this.depth - 1 && this.cells[i + this.layerSize] != 0;   // liquid above: under pressure
-        for (int[] d : SIDES) {
-            int nx = x + d[0], nz = z + d[1];
-            if (nx < 0 || nz < 0 || nx >= this.width || nz >= this.height) {
-                continue;
-            }
-            int j = i + d[0] + d[1] * this.width;
-            if (room(j, nx, y, nz, type) > 0 && (covered || f - fill(j) >= 2)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private void step(int i) {
-        byte type = this.cells[i];
-        if (type == 0) {
-            return;
-        }
-        if (this.touched.get(i)) {
-            this.active.set(i);
-            return;
-        }
-        LiquidTile liquid = LiquidTile.byIndex(type - 1);
-        int interval = Math.max(1, Math.round(liquid.getViscosity()));
-        if (this.tickCount % interval != 0) {
-            this.active.set(i);
-            return;
-        }
-
-        int x = i % this.width;
-        int rest = i / this.width;
-        int z = rest % this.height;
-        int y = rest / this.height;
-
-        if (!this.layer.passable(x, y, z)) {
-            this.layer.applyRaw(i, (byte) 0, (byte) 0);    // a block was put where this liquid is
-            wakeIndex(i);
-            return;
-        }
-
-        // big bodies of an infinite liquid: absorb what lies above sea level, remember if this is the surface
-        boolean seaLevel = false;
-        if (liquid.isInfinite() && y > 0 && this.cells[i - this.layerSize] == type && inBigBody(i, type)) {
-            if (this.excess.get(i)) {
-                this.layer.applyRaw(i, (byte) 0, (byte) 0);    // absorbed by the body
-                wakeIndex(i);
-                return;
-            }
-            seaLevel = this.surface.get(i);
-        }
-
-        int f = this.fills[i] & 0xFF;
-
-        // 1. fall
-        if (y > 0) {
-            int j = i - this.layerSize;
-            int room = room(j, x, y - 1, z, type);
-            if (room > 0) {
-                int m = Math.min(f, room);
-                transfer(i, j, m);
-                f -= m;
-            }
-        }
-
-        // 2. spread: level out with every lower side neighbour at once
-        if (f >= 2) {
-            int count = 0;
-            int total = f;
-            for (int s = 0; s < 4; s++) {
-                int[] d = SIDES[(s + this.rotation) & 3];
-                int nx = x + d[0], nz = z + d[1];
-                if (nx < 0 || nz < 0 || nx >= this.width || nz >= this.height) {
-                    continue;
-                }
-                int j = i + d[0] + d[1] * this.width;
-                int room = room(j, nx, y, nz, type);
-                if (room <= 0 || f - fill(j) < 2) {
-                    continue;
-                }
-                this.spreadTo[count] = j;
-                this.spreadRoom[count] = room;
-                total += fill(j);
-                count++;
-            }
-            if (count > 0) {
-                int share = total / (count + 1);
-                boolean moved = false;
-                for (int k = 0; k < count; k++) {
-                    int j = this.spreadTo[k];
-                    int m = Math.min(Math.min(share - fill(j), this.spreadRoom[k]), f);
-                    if (m > 0) {
-                        transfer(i, j, m);
-                        f -= m;
-                        moved = true;
-                    }
-                }
-                if (!moved) {
-                    // the even share rounded down to nothing (a few units next to many empty cells): still
-                    // move one unit into the lowest neighbour, it has at least 2 less
-                    int best = 0;
-                    for (int k = 1; k < count; k++) {
-                        if (fill(this.spreadTo[k]) < fill(this.spreadTo[best])) {
-                            best = k;
-                        }
-                    }
-                    transfer(i, this.spreadTo[best], 1);
-                    f--;
-                }
-            }
-        }
-
-        // 2b. level the whole body this cell is part of
-        if (this.cells[i] != 0) {
-            levelBody(i, type);
-        }
-        f = fill(i);
-
-        // 3. the surface of a big body is an endless supply: it is topped up again
-        if (seaLevel && f > 0 && f < LiquidLayer.MAX_FILL
-                && (this.fills[i - this.layerSize] & 0xFF) == LiquidLayer.MAX_FILL) {
-            this.layer.applyRaw(i, type, (byte) LiquidLayer.MAX_FILL);
-            wakeIndex(i);                                   // neighbours may want to take from the full cell
-        }
-    }
-
-    private int fill(int i) {
-        return this.cells[i] == 0 ? 0 : this.fills[i] & 0xFF;
-    }
-
-    // how many units the cell can still take of this liquid (0 if a block or another liquid is there)
-    private int room(int j, int x, int y, int z, byte type) {
-        if (!this.layer.passable(x, y, z)) {
-            return 0;
-        }
-        byte c = this.cells[j];
-        if (c == 0) {
-            return LiquidLayer.MAX_FILL;
-        }
-        if (c != type) {
-            return 0;
-        }
-        return LiquidLayer.MAX_FILL - (this.fills[j] & 0xFF);
-    }
-
-    private void transfer(int from, int to, int amount) {
-        byte type = this.cells[from];
-        int left = (this.fills[from] & 0xFF) - amount;
-        int gained = fill(to) + amount;
-
-        this.layer.applyRaw(from, left <= 0 ? 0 : type, (byte) Math.max(left, 0));
-        this.layer.applyRaw(to, type, (byte) gained);
-
-        this.touched.set(to);
-        wakeIndex(from);
-        wakeIndex(to);
-    }
-
-    // lowest cell of the run of this liquid that cell i is part of
-    private int stackBottom(int i, byte type) {
-        while (i >= this.layerSize && this.cells[i - this.layerSize] == type) {
-            i -= this.layerSize;
-        }
-        return i;
-    }
-
-    // registers the stack that starts at bottomIdx. false (and nothing registered) when it is not a settled stack
-    private boolean addStack(int bottomIdx, byte type) {
-        int col = bottomIdx % this.layerSize;
-        int x = col % this.width;
-        int z = col / this.width;
-        int b = bottomIdx / this.layerSize;
-
-        if (b > 0 && this.cells[bottomIdx - this.layerSize] == 0 && this.layer.passable(x, b - 1, z)) {
-            return false;                                   // nothing under it: it is still falling
-        }
-        int y = b;
-        int amount = 0;
-        while (true) {
-            int idx = y * this.layerSize + col;
-            int f = this.fills[idx] & 0xFF;
-            amount += f;
-            if (y == this.depth - 1 || this.cells[idx + this.layerSize] != type) {
-                break;
-            }
-            if (f != LiquidLayer.MAX_FILL) {
-                return false;                               // a stream, not a column of liquid
-            }
-            y++;
-        }
-        int top = y;
-        int cap = top + 1;
-        while (cap < this.depth) {
-            int idx = cap * this.layerSize + col;
-            if (this.cells[idx] != 0 || !this.layer.passable(x, cap, z)) {
-                break;
-            }
-            cap++;
-        }
-        int s = this.stackCount++;
-        this.stCol[s] = col;
-        this.stBottomIdx[s] = bottomIdx;
-        this.stB[s] = b;
-        this.stT[s] = top;
-        this.stCap[s] = cap;
-        this.stAmount[s] = amount;
-        return true;
-    }
-
-    // units that fit below water level h in all stacks
-    private int poured(int h) {
-        int sum = 0;
-        for (int s = 0; s < this.stackCount; s++) {
-            int floor = this.stB[s] * LiquidLayer.MAX_FILL;
-            int room = (this.stCap[s] - this.stB[s]) * LiquidLayer.MAX_FILL;
-            sum += Math.max(0, Math.min(h - floor, room));
-        }
-        return sum;
-    }
-
-    /**
-     * levels the body of liquid that cell `start` belongs to (see the class comment): finds the connected
-     * stacks, then pours all their liquid out again with one common water level. every body is handled once
-     * per tick.
-     */
-    private void levelBody(int start, byte type) {
-        if (this.leveled.get(start)) {
-            return;
-        }
-        int first = stackBottom(start, type);
-        this.stackCount = 0;
-        if (!addStack(first, type)) {
-            return;
-        }
-        this.levelSeen.set(first);
-
-        boolean tooBig = false;
-        for (int s = 0; s < this.stackCount && !tooBig; s++) {
-            int col = this.stCol[s];
-            int x = col % this.width;
-            int z = col / this.width;
-            int low = this.stB[s], high = this.stT[s];
-            for (int[] d : SIDES) {
-                int nx = x + d[0], nz = z + d[1];
-                if (nx < 0 || nz < 0 || nx >= this.width || nz >= this.height) {
-                    continue;
-                }
-                int col2 = col + d[0] + d[1] * this.width;
-                int y = low;
-                while (y <= high) {
-                    if (this.cells[y * this.layerSize + col2] != type) {
-                        y++;
-                        continue;
-                    }
-                    int bottom = stackBottom(y * this.layerSize + col2, type);
-                    if (!this.levelSeen.get(bottom)) {
-                        if (this.stackCount >= LEVEL_MAX_STACKS) {
-                            tooBig = true;
-                            break;
-                        }
-                        if (addStack(bottom, type)) {
-                            this.levelSeen.set(bottom);
-                        }
-                    }
-                    while (y <= high && this.cells[y * this.layerSize + col2] == type) {
-                        y++;
-                    }
-                }
-                if (tooBig) {
-                    break;
-                }
-            }
-        }
-
-        int n = this.stackCount;
-        int minHead = Integer.MAX_VALUE, maxHead = Integer.MIN_VALUE;
-        int total = 0, lo = Integer.MAX_VALUE, hi = 0;
-        for (int s = 0; s < n; s++) {
-            this.levelSeen.clear(this.stBottomIdx[s]);
-            for (int y = this.stB[s]; y <= this.stT[s]; y++) {
-                this.leveled.set(y * this.layerSize + this.stCol[s]);
-            }
-            int head = this.stB[s] * LiquidLayer.MAX_FILL + this.stAmount[s];   // surface height in units
-            minHead = Math.min(minHead, head);
-            maxHead = Math.max(maxHead, head);
-            total += this.stAmount[s];
-            lo = Math.min(lo, this.stB[s] * LiquidLayer.MAX_FILL);
-            hi = Math.max(hi, this.stCap[s] * LiquidLayer.MAX_FILL);
-        }
-        if (tooBig || n < 2 || maxHead - minHead <= 1) {
-            return;                                         // one stack, too big, or already flat
-        }
-
-        // the highest water level that doesn't need more liquid than there is
-        while (lo < hi) {
-            int mid = (lo + hi + 1) >>> 1;
-            if (poured(mid) <= total) {
-                lo = mid;
-            } else {
-                hi = mid - 1;
-            }
-        }
-        int level = lo;
-
-        int remaining = total;
-        for (int s = 0; s < n; s++) {
-            int floor = this.stB[s] * LiquidLayer.MAX_FILL;
-            int room = (this.stCap[s] - this.stB[s]) * LiquidLayer.MAX_FILL;
-            this.stTarget[s] = Math.max(0, Math.min(level - floor, room));
-            remaining -= this.stTarget[s];
-        }
-        // leftover units (less than the number of stacks the level could still rise in): the stacks that
-        // already hold the most keep them first, so a settled body doesn't shuffle
-        for (int pass = 0; pass < 2 && remaining > 0; pass++) {
-            for (int s = 0; s < n && remaining > 0; s++) {
-                int floor = this.stB[s] * LiquidLayer.MAX_FILL;
-                int room = (this.stCap[s] - this.stB[s]) * LiquidLayer.MAX_FILL;
-                int base = level - floor;
-                if (base < 0 || base >= room || this.stTarget[s] != base) {
-                    continue;
-                }
-                if (pass == 0 && this.stAmount[s] <= base) {
-                    continue;
-                }
-                this.stTarget[s]++;
-                remaining--;
-            }
-        }
-
-        // pour: every stack is full from its floor up, with the remainder in the cell above
-        for (int s = 0; s < n; s++) {
-            int amount = this.stTarget[s];
-            if (amount == this.stAmount[s]) {
-                continue;
-            }
-            int full = amount / LiquidLayer.MAX_FILL;
-            int rest = amount % LiquidLayer.MAX_FILL;
-            int topLayer = rest > 0 ? this.stB[s] + full : this.stB[s] + full - 1;
-            int end = Math.max(this.stT[s], topLayer);
-            for (int y = this.stB[s]; y <= end; y++) {
-                int idx = y * this.layerSize + this.stCol[s];
-                int want = (y - this.stB[s]) < full ? LiquidLayer.MAX_FILL : ((y - this.stB[s]) == full ? rest : 0);
-                int have = this.cells[idx] == type ? this.fills[idx] & 0xFF : 0;
-                if (want == have) {
-                    continue;
-                }
-                this.layer.applyRaw(idx, want == 0 ? (byte) 0 : type, (byte) want);
-                this.touched.set(idx);
-                wakeIndex(idx);
-            }
+            process(pop());
         }
     }
 
     // ------------------------------------------------------------------------------------------------
-    // big body analysis
+    // one cell
 
-    private int neighbour(int i, int x, int y, int z, int n) {
-        switch (n) {
-            case 0:  return x > 0 ? i - 1 : -1;
-            case 1:  return x < this.width - 1 ? i + 1 : -1;
-            case 2:  return z > 0 ? i - this.width : -1;
-            case 3:  return z < this.height - 1 ? i + this.width : -1;
-            case 4:  return y > 0 ? i - this.layerSize : -1;
-            default: return y < this.depth - 1 ? i + this.layerSize : -1;
+    private void process(int i) {
+        int x = i % this.width;
+        int rest = i / this.width;
+        int z = rest % this.height;
+        int y = rest / this.height;
+
+        byte cur = type(i);
+        int curFill = cur == 0 ? 0 : fill(i);
+
+        if (!this.layer.passable(x, y, z)) {
+            if (cur != 0) {                   // a block that fills the cell was put where this liquid is
+                set(i, x, y, z, (byte) 0, 0);
+                if (finite) {
+                    relocate(x, y, z, cur, curFill);
+                }
+            }
+            return;
+        }
+        if (finite) {
+            processFinite(i, x, y, z);
+            return;
+        }
+        if (curFill >= SOURCE) {
+            return;                           // sources are permanent
+        }
+
+        int[] nb = this.sides;
+        nb[0] = x > 0 ? i - 1 : -1;
+        nb[1] = x < this.width - 1 ? i + 1 : -1;
+        nb[2] = z > 0 ? i - this.width : -1;
+        nb[3] = z < this.height - 1 ? i + this.width : -1;
+
+        byte wantType = 0;
+        int wantFill = 0;
+
+        // the sea only feeds its own region, never the land beside it
+        boolean region = this.layer.isRegionCell(i);
+
+        // 0. a hole (or partial cell) of the ocean next to plain ocean is simply refilled
+        if (region) {
+            byte ocean = this.layer.oceanValue();
+            if (cur == 0 || cur == ocean) {
+                boolean fed = y < this.depth - 1 && this.layer.isOceanCell(i + this.layerSize);
+                for (int s = 0; s < 4 && !fed; s++) {
+                    fed = nb[s] >= 0 && this.layer.isOceanCell(nb[s]);
+                }
+                if (fed) {
+                    wantType = ocean;
+                    wantFill = SOURCE;
+                }
+            }
+        }
+
+        // 1. an infinite liquid with two source neighbours becomes a source
+        for (int s = 0; s < 4 && wantFill < SOURCE; s++) {
+            int j = nb[s];
+            if (j < 0) continue;
+            byte t = type(j);
+            if (t == 0 || (cur != 0 && t != cur) || fill(j) < SOURCE) continue;
+            if (!region && this.layer.isOceanCell(j)) continue;
+            if (!LiquidTile.byIndex(t - 1).isInfinite()) continue;
+            int sources = 1;
+            for (int r = s + 1; r < 4; r++) {
+                int k = nb[r];
+                if (k >= 0 && type(k) == t && fill(k) >= SOURCE && (region || !this.layer.isOceanCell(k))) sources++;
+            }
+            if (sources >= 2 && supported(i, x, y, z, t)) {
+                wantType = t;
+                wantFill = SOURCE;
+            }
+        }
+
+        // 2. otherwise the best feed: from above, or from the sides
+        if (wantFill == 0) {
+            if (y < this.depth - 1) {
+                byte t = type(i + this.layerSize);
+                if (t != 0 && (cur == 0 || t == cur) && (region || !this.layer.isOceanCell(i + this.layerSize))) {
+                    wantType = t;
+                    wantFill = FALL_LEVEL;
+                }
+            }
+
+            byte below = y > 0 ? type(i - this.layerSize) : 0;
+            boolean onSource = below != 0 && fill(i - this.layerSize) >= SOURCE;
+
+            for (int s = 0; s < 4; s++) {
+                int j = nb[s];
+                if (j < 0) continue;
+                byte t = type(j);
+                if (t == 0 || (cur != 0 && t != cur)) continue;
+                if (!region && this.layer.isOceanCell(j)) continue;
+                if (onSource && below == t) continue;     // no skin of liquid over a body of the same liquid
+                int level = offered(j, x + SIDE_DX[s], y, z + SIDE_DZ[s], t);
+                if (level > wantFill) {
+                    wantType = t;
+                    wantFill = level;
+                }
+            }
+        }
+
+        if (wantType == cur && wantFill == curFill) {
+            return;                           // already as it should be: the wave stops here
+        }
+
+        // thick liquids act every few ticks
+        byte gate = wantType != 0 ? wantType : cur;
+        int interval = Math.max(1, Math.round(LiquidTile.byIndex(gate - 1).getViscosity()));
+        if (interval > 1 && this.tickCount % interval != 0) {
+            push(i);
+            return;
+        }
+
+        set(i, x, y, z, wantType, wantFill);
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // finite mode
+
+    // a liquid cell gives units away: down while the cell below has room, then sideways to neighbours that hold
+    // at least 2 units less (half the difference). empty cells do nothing: the liquid next to them acts for them.
+    // plain ocean cells are the exception to "gives away": they hold 8 forever and top up the cells of their own region
+    private void processFinite(int i, int x, int y, int z) {
+        byte type = type(i);
+        int fill = type == 0 ? 0 : fill(i);
+        if (fill == 0) {
+            return;
+        }
+        boolean sea = this.layer.isOceanCell(i);
+
+        // thick liquids only move on every few ticks; a settled cell is not requeued, only one that wants to move
+        int interval = Math.max(1, Math.round(LiquidTile.byIndex(type - 1).getViscosity()));
+        boolean acts = interval == 1 || this.tickCount % interval == 0;
+
+        // 1. down
+        if (y > 0) {
+            int b = i - this.layerSize;
+            byte bt = type(b);
+            int bf = bt == 0 ? 0 : fill(b);
+
+            // liquid poured on top of the sea joins it, so there is no skin of water lying on the surface
+            if (!sea && bt == type && this.layer.isOceanCell(b) && !this.layer.isRegionCell(i)) {
+                if (!acts) {
+                    push(i);
+                    return;
+                }
+                set(i, x, y, z, (byte) 0, 0);
+                return;
+            }
+
+            if ((bt == 0 || bt == type) && bf < SOURCE && this.layer.passable(x, y - 1, z)
+                    && (!sea || this.layer.isRegionCell(b))) {
+                if (!acts) {
+                    push(i);
+                    return;
+                }
+                int amount = Math.min(fill, SOURCE - bf);
+                set(b, x, y - 1, z, type, bf + amount);
+                if (!sea) {
+                    fill -= amount;
+                    set(i, x, y, z, fill == 0 ? (byte) 0 : type, fill);
+                    if (fill == 0) {
+                        return;
+                    }
+                }
+            }
+        }
+
+        // 2. sideways, starting from a different side each time so the liquid doesn't lean in one direction
+        int start = (int) ((this.tickCount + i) & 3);
+        for (int k = 0; k < 4; k++) {
+            int s = (k + start) & 3;
+            int nx = x + SIDE_DX[s];
+            int nz = z + SIDE_DZ[s];
+            if (nx < 0 || nz < 0 || nx >= this.width || nz >= this.height) {
+                continue;
+            }
+            int j = i + SIDE_DX[s] + SIDE_DZ[s] * this.width;
+            byte jt = type(j);
+            if (jt != 0 && jt != type) {
+                continue;                     // liquids never mix
+            }
+            int jf = jt == 0 ? 0 : fill(j);
+            int diff = fill - jf;
+            if (diff < (sea ? 1 : 2)) {
+                continue;
+            }
+            if (sea && !this.layer.isRegionCell(j)) {
+                continue;                     // the sea never floods the land
+            }
+            if (jt == 0 && !this.layer.passable(nx, y, nz)) {
+                continue;
+            }
+            if (!acts) {
+                push(i);
+                return;
+            }
+            if (sea) {
+                set(j, nx, y, nz, type, SOURCE);     // tops the cell up completely, the sea itself loses nothing
+                continue;
+            }
+            int amount = diff / 2;
+            set(j, nx, y, nz, type, jf + amount);
+            fill -= amount;
+            set(i, x, y, z, fill == 0 ? (byte) 0 : type, fill);
+            if (fill == 0) {
+                return;
+            }
         }
     }
 
-    /**
-     * true when the cell is part of a body of at least infiniteBodySize connected cells of the same liquid.
-     * for a big body this also fills `excess` (above sea level) and `surface` (at sea level) for the cells it
-     * looked at. the flood fill stops as soon as the size limit is reached, so it never costs more than that
-     * many cells, and the answer is remembered for the rest of the tick.
-     */
-    private boolean inBigBody(int start, byte type) {
-        if (this.checked.get(start)) {
-            return this.big.get(start);
+    // liquid that a block pushed out of its cell: goes up, then to the sides, into whatever has room. the rest is lost
+    private void relocate(int x, int y, int z, byte type, int amount) {
+        for (int d = 0; d < 5 && amount > 0; d++) {
+            int nx = x, ny = y, nz = z;
+            if (d == 0) {
+                ny++;
+            } else {
+                nx += SIDE_DX[d - 1];
+                nz += SIDE_DZ[d - 1];
+            }
+            if (nx < 0 || ny < 0 || nz < 0 || nx >= this.width || ny >= this.depth || nz >= this.height) {
+                continue;
+            }
+            int j = (ny * this.height + nz) * this.width + nx;
+            byte jt = type(j);
+            if ((jt != 0 && jt != type) || !this.layer.passable(nx, ny, nz)) {
+                continue;
+            }
+            int jf = jt == 0 ? 0 : fill(j);
+            int room = SOURCE - jf;
+            if (room <= 0) {
+                continue;
+            }
+            int moved = Math.min(room, amount);
+            set(j, nx, ny, nz, type, jf + moved);
+            amount -= moved;
         }
-        int limit = Math.max(2, infiniteBodySize);
-        if (this.queue.length != limit) {
-            this.queue = new int[limit];
-        }
-        int[] q = this.queue;
-        int head = 0, tail = 0;
-        q[tail++] = start;
-        this.visited.set(start);
-        boolean isBig = false;
+    }
 
-        while (head < tail && !isBig) {
-            int i = q[head++];
-            int x = i % this.width;
-            int z = (i / this.width) % this.height;
-            int y = i / this.layerSize;
-            for (int n = 0; n < 6; n++) {
-                int j = neighbour(i, x, y, z, n);
-                if (j < 0 || this.cells[j] != type || this.visited.get(j)) {
-                    continue;
-                }
-                this.visited.set(j);
-                q[tail++] = j;
-                if (tail >= limit) {
-                    isBig = true;
-                    break;
-                }
-            }
-        }
+    // ------------------------------------------------------------------------------------------------
 
-        int level = -1;
-        if (isBig) {
-            int minY = this.depth, maxY = 0;
-            for (int k = 0; k < tail; k++) {
-                int cy = q[k] / this.layerSize;
-                this.layerCount[cy]++;
-                if (cy < minY) minY = cy;
-                if (cy > maxY) maxY = cy;
-            }
-            int widest = 0;
-            for (int cy = minY; cy <= maxY; cy++) {
-                widest = Math.max(widest, this.layerCount[cy]);
-            }
-            for (int cy = maxY; cy >= minY; cy--) {
-                if (this.layerCount[cy] * SURFACE_SHARE >= widest) {
-                    level = cy;
-                    break;
-                }
-            }
-            for (int cy = minY; cy <= maxY; cy++) {
-                this.layerCount[cy] = 0;
-            }
+    // what the side cell j (at nx, y, nz) feeds into its neighbour: sources always spread, flowing liquid only
+    // while it rests on something solid, and every step costs one level
+    private int offered(int j, int nx, int y, int nz, byte type) {
+        int f = fill(j);
+        if (f >= SOURCE) {
+            return FALL_LEVEL;
         }
+        if (f < 2 || holeBelow(j, nx, y, nz, type)) {
+            return 0;
+        }
+        return f - 1;
+    }
 
-        for (int k = 0; k < tail; k++) {
-            int c = q[k];
-            this.visited.clear(c);
-            this.checked.set(c);
-            if (isBig) {
-                int cy = c / this.layerSize;
-                this.big.set(c);
-                this.excess.set(c, cy > level);
-                this.surface.set(c, cy == level);
-            }
+    // nothing solid under the cell: air, or more of the same liquid. (another liquid counts as a floor)
+    private boolean holeBelow(int j, int x, int y, int z, byte type) {
+        if (y == 0) {
+            return false;
         }
-        return isBig;
+        byte b = type(j - this.layerSize);
+        if (b != 0) {
+            return b == type;
+        }
+        return this.layer.passable(x, y - 1, z);
+    }
+
+    // a block or a source of the same liquid under the cell
+    private boolean supported(int i, int x, int y, int z, byte type) {
+        if (y == 0) {
+            return true;
+        }
+        byte b = type(i - this.layerSize);
+        if (b != 0) {
+            return b == type && fill(i - this.layerSize) >= SOURCE;
+        }
+        return !this.layer.passable(x, y - 1, z);
+    }
+
+    // writes the cell and wakes what depends on it
+    private void set(int i, int x, int y, int z, byte type, int fill) {
+        this.layer.applyRaw(i, type, (byte) (type == 0 ? 0 : fill));
+        push(i);                              // it may now be taken by another liquid
+        pushNeighbours(i, x, y, z);
     }
 }

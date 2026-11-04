@@ -8,6 +8,7 @@ import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
+import java.nio.FloatBuffer;
 
 import static org.lwjgl.opengl.GL11.*;
 
@@ -18,19 +19,40 @@ public class SkyboxRenderer {
     private static final int LATITUDE_SEGMENTS = 48;
     private static final int LONGITUDE_SEGMENTS = 96;
 
+    // one colour per latitude ring (see SkyDomeShader)
+    static final int RING_COUNT = LATITUDE_SEGMENTS + 1;
+
     private static final String SUN_TEXTURE = "/assets/rubydung/textures/enviroment/sun.png";
     private static final String MOON_TEXTURE = "/assets/rubydung/textures/enviroment/moon.png";
 
-    // distance of the sun/moon quads from the eye (inside SKY_RADIUS)
-    private static final float BODY_DISTANCE = 1500.0F;
+    // Aristotle's order outwards: Moon, Mercury (1450), Venus (1500), Sun, Mars (1600) ... see CelestialSphere.
+    // Both are inside SKY_RADIUS. Quad sizes are scaled by distance / BODY_REFERENCE_DISTANCE so they keep the same apparent size.
+    private static final float MOON_DISTANCE = 1400.0F;
+    private static final float SUN_DISTANCE = 1550.0F;
+    private static final float BODY_REFERENCE_DISTANCE = 1500.0F;
 
     // world units per texture pixel: 1.0 = the quad is exactly as many units wide/tall as the image is pixels
     private static final float BODY_PIXEL_SCALE = 6.0F;
 
     // tilt of the sun/moon orbit away from the east-west plane (radians), so noon isn't exactly overhead
     private static final float ORBIT_TILT = 0.4F;
+    private static final float SIN_TILT = (float) Math.sin(ORBIT_TILT);
+    private static final float COS_TILT = (float) Math.cos(ORBIT_TILT);
+
+    /** sin of the orbit tilt, shared with CelestialSphere so the stars and planets turn about the same axis as the sun */
+    static float sinTilt() {
+        return SIN_TILT;
+    }
+
+    /** cos of the orbit tilt */
+    static float cosTilt() {
+        return COS_TILT;
+    }
 
     private final Tessellator tessellator = new Tessellator();
+
+    // everything beyond the sun and moon: planets, the fixed stars and the constellations
+    private final CelestialSphere celestialSphere = new CelestialSphere();
 
     private boolean bodyTexturesLoaded = false;
     private int sunTexture = 0, sunWidth = 0, sunHeight = 0;
@@ -61,6 +83,12 @@ public class SkyboxRenderer {
         glPushMatrix();
         glTranslated(eyeX, eyeY, eyeZ);
         renderMesh();
+
+        // Stars, constellations and planets sit on top of the dome, behind the clouds, sun and moon. They only test
+        // depth (when solid), never write it, so they can't hide anything drawn after them.
+        glDepthMask(false);
+        this.celestialSphere.render(cycle);
+        glDepthMask(this.solid);
         glPopMatrix();
 
         cleanupRenderState();
@@ -99,8 +127,8 @@ public class SkyboxRenderer {
 
         float angle = (this.cycle.getTime() - 0.25F) * (float) (2.0 * Math.PI);
         float sunX = (float) Math.cos(angle);
-        float sunY = (float) (Math.sin(angle) * Math.cos(ORBIT_TILT));
-        float sunZ = (float) (Math.sin(angle) * Math.sin(ORBIT_TILT));
+        float sunY = (float) Math.sin(angle) * COS_TILT;
+        float sunZ = (float) Math.sin(angle) * SIN_TILT;
 
         glEnable(GL_TEXTURE_2D);
         glEnable(GL_BLEND);
@@ -110,7 +138,7 @@ public class SkyboxRenderer {
             // Fade out as it drops below the horizon, and turn warm while it is low.
             float visibility = clamp01((sunY + 0.1F) / 0.25F);
             float warm = clamp01(1.0F - sunY / 0.45F);
-            drawBody(this.sunTexture, sunX, sunY, sunZ,
+            drawBody(this.sunTexture, SUN_DISTANCE, sunX, sunY, sunZ,
                     this.sunWidth * 0.5F * BODY_PIXEL_SCALE,
                     this.sunHeight * 0.5F * BODY_PIXEL_SCALE,
                     lerp(1.0F, 1.0F, warm) * visibility,
@@ -124,7 +152,7 @@ public class SkyboxRenderer {
             // A bright daytime sky washes the moon out, but it stays faintly visible.
             float dim = 1.0F - 0.65F * this.cycle.getAmbient();
             float v = visibility * dim;
-            drawBody(this.moonTexture, -sunX, moonY, -sunZ,
+            drawBody(this.moonTexture, MOON_DISTANCE, -sunX, moonY, -sunZ,
                     this.moonWidth * 0.5F * BODY_PIXEL_SCALE,
                     this.moonHeight * 0.5F * BODY_PIXEL_SCALE,
                     0.85F * v, 0.9F * v, 1.0F * v);
@@ -134,10 +162,15 @@ public class SkyboxRenderer {
         glDisable(GL_BLEND);
     }
 
-    private void drawBody(int texture, float dx, float dy, float dz, float halfW, float halfH, float r, float g, float b) {
+    private void drawBody(int texture, float distance, float dx, float dy, float dz, float halfW, float halfH, float r, float g, float b) {
         if (r <= 0.0F && g <= 0.0F && b <= 0.0F) {
             return;
         }
+
+        // keep the apparent size the same whatever sphere the body sits on
+        float sizeScale = distance / BODY_REFERENCE_DISTANCE;
+        halfW *= sizeScale;
+        halfH *= sizeScale;
 
         // Camera-facing basis: right = dir x worldUp, up = right x dir.
         float rx = -dz;
@@ -154,9 +187,9 @@ public class SkyboxRenderer {
         float uy = rz * dx - rx * dz;
         float uz = rx * dy;
 
-        float cx = dx * BODY_DISTANCE;
-        float cy = dy * BODY_DISTANCE;
-        float cz = dz * BODY_DISTANCE;
+        float cx = dx * distance;
+        float cy = dy * distance;
+        float cz = dz * distance;
 
         Textures.bind(texture);
 
@@ -175,16 +208,27 @@ public class SkyboxRenderer {
         this.tessellator.flush();
     }
 
+    private static int[] loadTexture(String path) {
+        return loadTexture(path, false);
+    }
+
     // loads a PNG from the classpath into a clamped, nearest-filtered RGBA texture
     // returns {id, width, height}, or {0, 0, 0} on failure
-    private static int[] loadTexture(String path) {
+    // optional: a missing file is expected (the caller has a fallback), so it isn't reported
+    static int[] loadTexture(String path, boolean optional) {
         try (InputStream in = SkyboxRenderer.class.getResourceAsStream(path)) {
             if (in == null) {
-                System.out.println("Missing sky texture: " + path);
+                if (!optional) {
+                    System.out.println("Missing sky texture: " + path);
+                }
                 return new int[]{0, 0, 0};
             }
 
             BufferedImage image = ImageIO.read(in);
+            if (image == null) {
+                System.out.println("Unreadable sky texture: " + path);
+                return new int[]{0, 0, 0};
+            }
             int width = image.getWidth();
             int height = image.getHeight();
             int[] pixels = image.getRGB(0, 0, width, height, null, 0, width);
@@ -218,71 +262,104 @@ public class SkyboxRenderer {
         return Math.max(0.0F, Math.min(1.0F, value));
     }
 
-    private void renderMesh() {
-        for (int lat = 0; lat < LATITUDE_SEGMENTS; lat++) {
+    // Trig for the dome never changes, so it is computed once.
+    private static final float[] RING_Y = new float[LATITUDE_SEGMENTS + 1];       // height of each latitude ring
+    private static final float[] RING_RADIUS = new float[LATITUDE_SEGMENTS + 1];  // horizontal radius of each ring
+    private static final float[] LON_COS = new float[LONGITUDE_SEGMENTS + 1];
+    private static final float[] LON_SIN = new float[LONGITUDE_SEGMENTS + 1];
 
-            float theta0 = (float) (-Math.PI / 2.0 + Math.PI * lat / LATITUDE_SEGMENTS);
-            float theta1 = (float) (-Math.PI / 2.0 + Math.PI * (lat + 1) / LATITUDE_SEGMENTS);
-
-            tessellator.init(GL_TRIANGLE_STRIP);
-
-            for (int lon = 0; lon <= LONGITUDE_SEGMENTS; lon++) {
-
-                float phi = (float) (2.0 * Math.PI * lon / LONGITUDE_SEGMENTS);
-
-                addVertex(theta0, phi);
-                addVertex(theta1, phi);
-            }
-
-            tessellator.flush();
+    static {
+        for (int lat = 0; lat <= LATITUDE_SEGMENTS; lat++) {
+            double theta = -Math.PI / 2.0 + Math.PI * lat / LATITUDE_SEGMENTS;
+            RING_Y[lat] = (float) Math.sin(theta) * SKY_RADIUS;
+            RING_RADIUS[lat] = (float) Math.cos(theta) * SKY_RADIUS;
+        }
+        for (int lon = 0; lon <= LONGITUDE_SEGMENTS; lon++) {
+            double phi = 2.0 * Math.PI * lon / LONGITUDE_SEGMENTS;
+            LON_COS[lon] = (float) Math.cos(phi);
+            LON_SIN[lon] = (float) Math.sin(phi);
         }
     }
 
-    private void addVertex(float theta, float phi) {
+    // The colour only depends on the latitude, so it is worked out once per ring per frame, not once per vertex.
+    private final float[] ringR = new float[LATITUDE_SEGMENTS + 1];
+    private final float[] ringG = new float[LATITUDE_SEGMENTS + 1];
+    private final float[] ringB = new float[LATITUDE_SEGMENTS + 1];
 
-        float cosTheta = (float) Math.cos(theta);
-        float sinTheta = (float) Math.sin(theta);
-
-        float cosPhi = (float) Math.cos(phi);
-        float sinPhi = (float) Math.sin(phi);
-
-        float x = cosTheta * cosPhi * SKY_RADIUS;
-        float y = sinTheta * SKY_RADIUS;
-        float z = cosTheta * sinPhi * SKY_RADIUS;
-
+    private void computeRingColors() {
         float[] zenith  = cycle.getZenithColor();
         float[] horizon = cycle.getHorizonColor();
         float[] nadir   = cycle.getNadirColor();
 
-        float r;
-        float g;
-        float b;
+        for (int lat = 0; lat <= LATITUDE_SEGMENTS; lat++) {
+            float y = RING_Y[lat];
+            float r, g, b;
 
-        if (y >= 0.0F) {
+            if (y >= 0.0F) {
+                float t = (y / SKY_RADIUS + 0.35F) / 1.35F;
+                t = Math.max(0.0F, Math.min(1.0F, t));
+                t = t * t * (3.0F - 2.0F * t);
 
-            float t = (y / SKY_RADIUS + 0.35F) / 1.35F;
+                r = lerp(horizon[0], zenith[0], t);
+                g = lerp(horizon[1], zenith[1], t);
+                b = lerp(horizon[2], zenith[2], t);
+            } else {
+                float t = (float) Math.pow(-y / SKY_RADIUS, 0.75);
 
-            t = Math.max(0.0F, Math.min(1.0F, t));
+                r = lerp(horizon[0], nadir[0], t);
+                g = lerp(horizon[1], nadir[1], t);
+                b = lerp(horizon[2], nadir[2], t);
+            }
 
-            t = t * t * (3.0F - 2.0F * t);
+            this.ringR[lat] = r;
+            this.ringG[lat] = g;
+            this.ringB[lat] = b;
+        }
+    }
 
-            r = lerp(horizon[0], zenith[0], t);
-            g = lerp(horizon[1], zenith[1], t);
-            b = lerp(horizon[2], zenith[2], t);
+    // the dome is static geometry (compiled once), only its ring colours change. SkyDomeShader colours it from a uniform array
+    private int domeList = 0;
+    private final FloatBuffer ringUniform = BufferUtils.createFloatBuffer(RING_COUNT * 3);
 
-        } else {
+    private void renderMesh() {
+        computeRingColors();
 
-            float t = -y / SKY_RADIUS;
-
-            t = (float) Math.pow(t, 0.75);
-
-            r = lerp(horizon[0], nadir[0], t);
-            g = lerp(horizon[1], nadir[1], t);
-            b = lerp(horizon[2], nadir[2], t);
+        if (this.domeList == 0) {
+            buildDomeList();
         }
 
-        tessellator.color(r, g, b);
-        tessellator.vertex(x, y, z);
+        this.ringUniform.clear();
+        for (int lat = 0; lat < RING_COUNT; lat++) {
+            this.ringUniform.put(this.ringR[lat]).put(this.ringG[lat]).put(this.ringB[lat]);
+        }
+        this.ringUniform.flip();
+
+        SkyDomeShader.bind(this.ringUniform);
+        try {
+            glCallList(this.domeList);
+        } finally {
+            SkyDomeShader.unbind();
+        }
+    }
+
+    private void buildDomeList() {
+        this.domeList = glGenLists(1);
+        glNewList(this.domeList, GL_COMPILE);
+        for (int lat = 0; lat < LATITUDE_SEGMENTS; lat++) {
+            glBegin(GL_TRIANGLE_STRIP);
+            for (int lon = 0; lon <= LONGITUDE_SEGMENTS; lon++) {
+                domeVertex(lat, lon);
+                domeVertex(lat + 1, lon);
+            }
+            glEnd();
+        }
+        glEndList();
+    }
+
+    // the ring index rides in texture coordinate 0, SkyDomeShader turns it into the ring's colour
+    private static void domeVertex(int lat, int lon) {
+        glTexCoord2f(lat, 0.0F);
+        glVertex3f(RING_RADIUS[lat] * LON_COS[lon], RING_Y[lat], RING_RADIUS[lat] * LON_SIN[lon]);
     }
 
     private static float lerp(float a, float b, float t) {

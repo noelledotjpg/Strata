@@ -47,6 +47,11 @@ public class CloudRenderer {
 
     private int textureId = -1;
 
+    // The cloud plane never changes (the drift is done with the texture matrix), so each layer's mesh is
+    // compiled once into a display list instead of being re-submitted vertex by vertex every frame.
+    private int lowerList = -1;
+    private int upperList = -1;
+
     public CloudRenderer() {
         for (int gx = 0; gx <= GRID_SEGMENTS; gx++) {
             for (int gz = 0; gz <= GRID_SEGMENTS; gz++) {
@@ -86,9 +91,12 @@ public class CloudRenderer {
         if (textureId == -1) {
             textureId = Textures.loadCloudTexture(CloudTextureGenerator.generate(1024, 42L));
         }
+        if (lowerList == -1) {
+            lowerList = buildLayerList(LOWER_ALPHA);
+            upperList = buildLayerList(UPPER_ALPHA);
+        }
 
         // Each layer wraps on its own full texture repeat, so both loop seamlessly.
-        // (Wrapping one shared value and scaling it per layer made the slower layer jump back when the shared value wrapped.)
         double elapsedMs = (System.nanoTime() - driftStartNanos) / 1_000_000.0;
         float upperShift = (float) ((elapsedMs * DRIFT_TILES_PER_MS) % 1.0);
         float lowerShift = (float) ((elapsedMs * DRIFT_TILES_PER_MS * LOWER_SPEED_FACTOR) % 1.0);
@@ -98,7 +106,7 @@ public class CloudRenderer {
         setupRenderState();
         Textures.bind(textureId);
 
-        drawLayer(eyeX, eyeY + HEIGHT_OFFSET - LAYER_GAP, eyeZ, LOWER_TINT, cloudColor, LOWER_ALPHA, lowerShift);
+        drawLayer(lowerList, eyeX, eyeY + HEIGHT_OFFSET - LAYER_GAP, eyeZ, LOWER_TINT, cloudColor, lowerShift);
 
         if (betweenLayers != null) {
             // The callback draws with its own GL state, so hand it a clean one and set the cloud state up again afterwards.
@@ -108,7 +116,7 @@ public class CloudRenderer {
             Textures.bind(textureId);
         }
 
-        drawLayer(eyeX, eyeY + HEIGHT_OFFSET + LAYER_GAP, eyeZ, UPPER_TINT, cloudColor, UPPER_ALPHA, upperShift);
+        drawLayer(upperList, eyeX, eyeY + HEIGHT_OFFSET + LAYER_GAP, eyeZ, UPPER_TINT, cloudColor, upperShift);
 
         cleanupRenderState();
     }
@@ -124,13 +132,10 @@ public class CloudRenderer {
         glTexEnv(GL_TEXTURE_ENV, GL_TEXTURE_ENV_COLOR, this.tintBuffer);
     }
 
-    // The drift lives in the mesh: the plane stays centred on the eye (so the edge fade never moves),
-    // and the texture coordinates of its vertices are shifted every frame.
-    private void drawLayer(double x, double y, double z, float[] layerTint, float[] cloudColor, float alphaMul, float shift) {
-        glPushMatrix();
-        glTranslated(x, y, z);
-
-        setLayerTint(layerTint, cloudColor);
+    // Compiles the whole cloud plane (positions, edge-fade alpha, unshifted UVs) once.
+    private int buildLayerList(float alphaMul) {
+        int list = glGenLists(1);
+        glNewList(list, GL_COMPILE);
 
         for (int gx = 0; gx < GRID_SEGMENTS; gx++) {
             float x0 = -PLANE_HALF_SIZE + gx * CELL_SIZE;
@@ -141,20 +146,40 @@ public class CloudRenderer {
             for (int gz = 0; gz <= GRID_SEGMENTS; gz++) {
                 float vz = -PLANE_HALF_SIZE + gz * CELL_SIZE;
 
-                addVertex(x0, vz, this.edgeAlpha[gx][gz] * alphaMul, shift);
-                addVertex(x1, vz, this.edgeAlpha[gx + 1][gz] * alphaMul, shift);
+                addVertex(x0, vz, this.edgeAlpha[gx][gz] * alphaMul);
+                addVertex(x1, vz, this.edgeAlpha[gx + 1][gz] * alphaMul);
             }
 
             tessellator.flush();
         }
 
-        glPopMatrix();
+        glEndList();
+        return list;
     }
 
-    private void addVertex(float x, float z, float alpha, float shift) {
+    // The plane stays centred on the eye (so the edge fade never moves); the drift is a texture-matrix translation.
+    private void drawLayer(int list, double x, double y, double z, float[] layerTint, float[] cloudColor, float shift) {
+        setLayerTint(layerTint, cloudColor);
+
+        glMatrixMode(GL_TEXTURE);
+        glPushMatrix();
+        glTranslatef(shift, 0.0F, 0.0F);
+        glMatrixMode(GL_MODELVIEW);
+
+        glPushMatrix();
+        glTranslated(x, y, z);
+        glCallList(list);
+        glPopMatrix();
+
+        glMatrixMode(GL_TEXTURE);
+        glPopMatrix();
+        glMatrixMode(GL_MODELVIEW);
+    }
+
+    private void addVertex(float x, float z, float alpha) {
         // RGB is white here: the tint is applied at draw time via the texture environment colour.
         tessellator.color(1.0F, 1.0F, 1.0F, alpha);
-        tessellator.texture(x / UV_SCALE + shift, z / UV_SCALE);
+        tessellator.texture(x / UV_SCALE, z / UV_SCALE);
         tessellator.vertex(x, 0, z);
     }
 

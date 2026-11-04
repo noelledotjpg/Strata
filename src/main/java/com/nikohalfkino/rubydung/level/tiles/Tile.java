@@ -555,6 +555,9 @@ public class Tile {
         return BASE_UVS[face];
     }
 
+    /** the layer value that draws every face in one go, lit and shadowed alike (the terrain shader lights each vertex itself) */
+    public static final int LAYER_ALL = -1;
+
     public void render(Tessellator tessellator, Level level, int layer, int x, int y, int z, int totalAtlasSlots, int direction) {
         boolean smooth    = level.hasLightSources();
         boolean fullBright = tessellator.isIconFullBright(); // tile icons: plain shade, drawn without the shader
@@ -628,7 +631,7 @@ public class Tile {
                 }
             }
 
-            if (!((layer == 1) ^ fullyLit)) {
+            if (layer != LAYER_ALL && !((layer == 1) ^ fullyLit)) {
                 continue;
             }
 

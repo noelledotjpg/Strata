@@ -15,6 +15,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Random;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 
 public class Level {
 
@@ -155,6 +157,7 @@ public class Level {
     }
 
     public void load() {
+        cancelSnapshot();
         File levelFile = WorldManager.levelFile(this.worldName);
         boolean hasSave = levelFile.isFile();
 
@@ -213,22 +216,129 @@ public class Level {
 
     public void save() {
         SaveQueue.flush();
+        cancelSnapshot();
         byte[] encodedBlocks = writeSideFiles();
         LevelIO.save(WorldManager.levelFile(this.worldName), encodedBlocks, this.data, buildSavedPosition());
     }
 
-    public void saveAsync(Runnable onDone) {
-        byte[] encodedBlocks = writeSideFiles();
-        byte[] dataCopy = this.data.clone();
-        LevelIO.SavedPosition position = buildSavedPosition();
-        File file = WorldManager.levelFile(this.worldName);
+    // set from the moment an autosave starts copying until it has reached the disk, see saveAsync
+    private final AtomicBoolean asyncSaveRunning = new AtomicBoolean(false);
 
-        SaveQueue.submit(() -> {
-            LevelIO.save(file, encodedBlocks, dataCopy, position);
-            if (onDone != null) {
-                onDone.run();
-            }
-        });
+    // the autosave's copy of the block and data arrays. kept between autosaves, so a big world doesn't allocate
+    // (and zero) two huge arrays every few minutes
+    private byte[] blocksSnapshot;
+    private byte[] dataSnapshot;
+    private boolean snapshotPending = false;
+    private int snapshotCopied = 0;
+    private Runnable snapshotOnDone;
+
+    // bytes of each array copied per tick: a couple of MB, a fraction of a millisecond
+    private static final int SNAPSHOT_SLICE = 1 << 21;
+
+    /**
+     * the autosave. Copying the whole block and data arrays in one go was a visible hiccup in big worlds, so this
+     * only starts it: tickAutosave() (called every game tick) copies a slice per tick, and setBlock / setData
+     * write into the part already copied, so when the last slice is done the copy equals the live world.
+     * Only then are the small snapshots taken and everything slow handed to the save thread: the palette encode,
+     * the side files and the gzip + disk write.
+     *
+     * If the previous autosave has not reached the disk yet this one is skipped, it would reuse the copies it is
+     * still writing. Saving on quit or door travel goes through save() and never skips.
+     */
+    public void saveAsync(Runnable onDone) {
+        if (!this.asyncSaveRunning.compareAndSet(false, true)) {
+            return;
+        }
+
+        int size = this.blocks.length;
+        if (this.blocksSnapshot == null || this.blocksSnapshot.length != size) {
+            this.blocksSnapshot = new byte[size];
+            this.dataSnapshot = new byte[size];
+        }
+        this.snapshotCopied = 0;
+        this.snapshotOnDone = onDone;
+        this.snapshotPending = true;
+        this.liquids.beginSnapshot();
+    }
+
+    /** game thread, once per tick: copies the next slice of an autosave that is under way (does nothing otherwise) */
+    public void tickAutosave() {
+        if (!this.snapshotPending) {
+            return;
+        }
+
+        int count = Math.min(SNAPSHOT_SLICE, this.blocks.length - this.snapshotCopied);
+        System.arraycopy(this.blocks, this.snapshotCopied, this.blocksSnapshot, this.snapshotCopied, count);
+        System.arraycopy(this.data, this.snapshotCopied, this.dataSnapshot, this.snapshotCopied, count);
+        this.snapshotCopied += count;
+        boolean liquidsDone = this.liquids.copySnapshotSlice(SNAPSHOT_SLICE);
+
+        if (this.snapshotCopied >= this.blocks.length && liquidsDone) {
+            finishSnapshot();
+        }
+    }
+
+    // a full save (or a load) replaces what an autosave in progress was copying
+    private void cancelSnapshot() {
+        if (this.snapshotPending) {
+            this.snapshotPending = false;
+            this.snapshotOnDone = null;
+            this.liquids.cancelSnapshot();
+            this.asyncSaveRunning.set(false);
+        }
+    }
+
+    private void finishSnapshot() {
+        this.snapshotPending = false;
+        Runnable onDone = this.snapshotOnDone;
+        this.snapshotOnDone = null;
+
+        try {
+            String name = this.worldName;
+            File file = WorldManager.levelFile(name);
+            TilePalette savePalette = this.palette;
+            LevelGenerator.WorldType saveType = this.type;
+
+            byte[] blocksCopy = this.blocksSnapshot;
+            byte[] dataCopy = this.dataSnapshot;
+            LevelIO.SavedPosition position = buildSavedPosition();
+
+            Runnable saveMultiTiles = deferred(collectMultiTileOrigins(),
+                    origins -> WorldManager.saveWorldMultiTiles(name, origins));
+            Runnable saveSubTiles = deferred(this.subTiles.snapshot(),
+                    snapshot -> WorldManager.saveWorldSubTiles(name, snapshot));
+            Runnable saveDoors = deferred(getDoors(),
+                    doors -> DoorRegistry.save(name, doors));
+
+            // the liquid layer was copied slice by slice alongside the blocks; its gzip write runs on the save thread
+            Runnable saveLiquids = this.liquids.finishSnapshot(liquidFile());
+
+            SaveQueue.submit(() -> {
+                try {
+                    byte[] encodedBlocks = savePalette.encode(blocksCopy);
+                    WorldManager.saveWorldPalette(name, savePalette);
+                    saveMultiTiles.run();
+                    saveSubTiles.run();
+                    WorldManager.saveWorldType(name, saveType);
+                    saveDoors.run();
+                    saveLiquids.run();
+                    LevelIO.save(file, encodedBlocks, dataCopy, position);
+                } finally {
+                    this.asyncSaveRunning.set(false);
+                }
+                if (onDone != null) {
+                    onDone.run();
+                }
+            });
+        } catch (RuntimeException | Error e) {
+            this.asyncSaveRunning.set(false);
+            throw e;
+        }
+    }
+
+    /** a write that is run later with what the snapshot held when this was called */
+    private static <T> Runnable deferred(T snapshot, Consumer<T> write) {
+        return () -> write.accept(snapshot);
     }
 
     private byte[] writeSideFiles() {
@@ -287,6 +397,9 @@ public class Level {
         }
         int index = (y * this.height + z) * this.width + x;
         this.data[index] = (byte) val;
+        if (this.snapshotPending && index < this.snapshotCopied) {
+            this.dataSnapshot[index] = (byte) val;   // already copied, keep the copy current
+        }
 
         for (LevelListener levelListener : this.levelListeners) {
             levelListener.tileChanged(x, y, z);
@@ -351,6 +464,13 @@ public class Level {
     void liquidChanged(int x, int y, int z, LiquidTile oldLiquid, LiquidTile newLiquid) {
         for (LevelListener levelListener : this.levelListeners) {
             levelListener.tileChanged(x, y, z);
+        }
+    }
+
+    // the cells of a column between minY and maxY may have turned into ocean (its floor was dug out): rebuild what was baked from them
+    void oceanFloorChanged(int x, int z, int minY, int maxY) {
+        for (LevelListener levelListener : this.levelListeners) {
+            levelListener.lightColumnChanged(x, z, Math.max(0, minY), maxY);
         }
     }
 
@@ -459,6 +579,12 @@ public class Level {
         Tile oldTile = Tile.byId(this.blocks[index] & 0xFF);
         this.blocks[index] = (byte) id;
         this.data[index]   = (byte) data;
+        if (this.snapshotPending && index < this.snapshotCopied) {
+            this.blocksSnapshot[index] = (byte) id;   // already copied, keep the copy current
+            this.dataSnapshot[index]   = (byte) data;
+        }
+        this.liquids.blockChanged(x, y, z);   // the sea's floor may have just been dug out
+        this.liquids.wake(x, y, z);   // liquid next to this cell may now flow in (block removed) or have to stop (block placed)
 
         this.lighting.calcLightDepths(x, z, 1, 1);
         this.lighting.updateBlockLight(x, y, z, oldTile, Tile.byId(id & 0xFF), oldWasPart, newIsPart);

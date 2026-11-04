@@ -25,6 +25,7 @@ public class LiquidCommand implements Command {
         return Arrays.asList(
                 "Usage:",
                 "  liquid sim <on|off|toggle>  - turn the liquid simulation on or off",
+                "  liquid finite <on|off|toggle> - finite: liquid is conserved, no infinite sources",
                 "  liquid speed <ticks/sec>    - how often liquid moves (default 10)",
                 "  liquid step [n]             - run n simulation ticks now, even while off",
                 "  liquid status               - print whether it is on, its speed and busy cells");
@@ -58,6 +59,28 @@ public class LiquidCommand implements Command {
                 }
                 LiquidSimulator.setEnabled(on);
                 console.println("Liquid simulation " + (on ? "on" : "off"));
+                break;
+            }
+
+            case "finite": {
+                if (args.length < 2) {
+                    console.println("Usage: liquid finite <on|off|toggle>");
+                    return;
+                }
+                String value = args[1].toLowerCase();
+                boolean on;
+                if (value.equals("on") || value.equals("true")) {
+                    on = true;
+                } else if (value.equals("off") || value.equals("false")) {
+                    on = false;
+                } else if (value.equals("toggle")) {
+                    on = !LiquidSimulator.isFinite();
+                } else {
+                    console.println("Usage: liquid finite <on|off|toggle>");
+                    return;
+                }
+                LiquidSimulator.setFinite(on);
+                console.println("Finite liquid " + (on ? "on (liquid is conserved)" : "off (sources are infinite)"));
                 break;
             }
 
@@ -100,9 +123,15 @@ public class LiquidCommand implements Command {
                 break;
             }
 
+            case "sea": {
+                console.println("The sea has its own command now, type 'sea help'");
+                break;
+            }
+
             case "status": {
                 String busy = game.hasWorld() ? game.getLevel().getLiquids().getActiveCells() + " busy cells" : "no world";
                 console.println("Liquid simulation: " + (LiquidSimulator.isEnabled() ? "on" : "off")
+                        + " | " + (LiquidSimulator.isFinite() ? "finite" : "infinite")
                         + " | " + LiquidSimulator.getTicksPerSecond() + " ticks/sec | " + busy);
                 break;
             }
@@ -113,6 +142,6 @@ public class LiquidCommand implements Command {
     }
 
     private static void printUsage(Console console) {
-        console.println("Usage: liquid <sim|speed|step|status>  (type 'liquid help' for details)");
+        console.println("Usage: liquid <sim|finite|speed|step|status>  (the sea is the 'sea' command)  (type 'liquid help' for details)");
     }
 }

@@ -1,7 +1,7 @@
 #version 120
+invariant gl_Position;   // the depth-only program (liquid_depth.vert) computes the same position, so both passes agree exactly
 // MAX_LIQUIDS is #defined by LiquidShader.java (keep in sync with LiquidTile.MAX_LIQUIDS)
 
-uniform float time;
 uniform vec4 liqColor[MAX_LIQUIDS];
 uniform vec4 liqFoam[MAX_LIQUIDS];
 uniform vec4 liqMotion[MAX_LIQUIDS];
@@ -17,6 +17,9 @@ varying vec2  vSheet;
 varying vec4  vEdges;
 varying vec4  vCorners;
 varying vec2  vPane;         // a pane runs along x / along z through this cell
+varying vec4  vRectA;       // partial footprints (door, pane, stair, slab...) in cell coordinates: x0, z0, x1, z1. empty = all zero
+varying vec4  vRectB;
+varying vec4  vRectC;
 varying float vTop;
 varying float vFoamWeight;   // 0..1 (from 0..3)
 varying float vLiqIndex;
@@ -26,7 +29,7 @@ float bit(float v, float n) {
 }
 
 // packed alpha layout, written by LiquidTile.pack():
-//   bits 0-3 edge mask, 4-7 corner mask, 8 top face, 9 surface vertex,
+//   bits 0-3 edge mask, 4-7 corner mask, 8 top face, 9 surface vertex (unused now that the waves are gone),
 //   10-11 foam weight, 12-14 liquid index, 15 pane along x, 16 pane along z
 void main() {
     float allBits     = floor(gl_Color.a * 131072.0 + 0.5);
@@ -46,17 +49,16 @@ void main() {
     vCorners    = vec4(bit(flags, 4.0), bit(flags, 5.0), bit(flags, 6.0), bit(flags, 7.0));
     vTop        = bit(flags, 8.0);
     vPane       = vec2(bit(paneF, 0.0), bit(paneF, 1.0));
-    float surfV = bit(flags, 9.0);
     vFoamWeight = foamWeightF / 3.0;
     vLiqIndex   = indexF;
 
     vec4 p = gl_Vertex;
-    float t = time * vMotion.y;
-    float swell = 0.5 + 0.25 * sin(p.x * 1.9 + t * 1.3) + 0.25 * sin(p.z * 2.3 + p.x * 0.7 + t * 1.1);
-    p.y += surfV * vMotion.z * (swell - 1.0);
 
     vWorld      = p.xyz;
     vCell       = gl_MultiTexCoord0.st;
     vLight      = gl_Color.rgb;
+    vRectA      = gl_MultiTexCoord2;   // only the ocean surface sets these, everything else leaves them 0
+    vRectB      = gl_MultiTexCoord3;
+    vRectC      = gl_MultiTexCoord4;
     gl_Position = gl_ModelViewProjectionMatrix * p;
 }

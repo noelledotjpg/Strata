@@ -40,6 +40,7 @@ public class Console {
         register(new FreecamCommand());
         register(new SingCommand());
         register(new LiquidCommand());
+        register(new SeaCommand());
         register(new VectorsCommand());
         register(new ChunkBordersCommand());
 

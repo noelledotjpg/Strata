@@ -113,7 +113,6 @@ public final class TileRegistry {
             new LiquidTile("lava")
                     .setColor(1.00F, 0.38F, 0.05F, 1.0F)
                     .setFoam(0.12F, 0.03F, 0.01F, 1.0F)
-                    .setNoFoam()
                     .setWarp(0.20F)
                     .setFlowSpeed(0.35F)
                     .setWaveHeight(0.012F)

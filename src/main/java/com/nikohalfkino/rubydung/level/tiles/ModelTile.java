@@ -240,7 +240,7 @@ public class ModelTile extends Tile {
                 }
             }
 
-            if (!((layer == 1) ^ fullyLit)) {
+            if (layer != LAYER_ALL && !((layer == 1) ^ fullyLit)) {
                 continue;
             }
 

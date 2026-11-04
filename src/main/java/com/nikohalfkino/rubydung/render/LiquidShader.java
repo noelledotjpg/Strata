@@ -29,6 +29,13 @@ import java.util.List;
  * laid over the world like WrappedTile: one cell per block, repeating every columns x rows blocks. Everything that decides how the liquid looks is in the .frag (see the tunables
  * at the top: PIXELS_PER_BLOCK, TINT, COLOR_LEVELS, WARP_BLOCKS).
  *
+ * A second, tiny program (liquid_depth.vert / liquid_depth.frag) draws the depth pre-pass: same positions, same discards
+ * (distance dither and ocean fade), none of the shading. See bindDepth().
+ *
+ * The ocean fade: OceanSurface bakes into each column's quad (texcoord unit 1, s) the sea height at which that column first gets
+ * water. The vertex shader turns "surface - that height" into vOceanFade (0..1 over OCEAN_FADE_DEPTH blocks of water) and the
+ * fragment shader dithers with it, so columns fade in / out as the sea rises / falls instead of popping in a whole contour at once.
+ *
  * Vertex colour layout (written by LiquidTile.renderLiquid, decoded in liquid.vert):
  *   r, g, b = sky light, block light, face shade
  *   a       = packed integer / 32768 (edge mask, corner mask, top flag, surface flag, foam weight, liquid index)
@@ -41,7 +48,27 @@ public final class LiquidShader {
     // blob texture the foam is made from, bound to the texture unit after the liquid sheets
     private static final String DISTORTION_PATH = "/assets/rubydung/textures/block/liquid/distortion.png";
 
+    private static final String DEPTH_VERTEX_PATH = "/assets/rubydung/shaders/liquid_depth.vert";
+    private static final String DEPTH_FRAGMENT_PATH = "/assets/rubydung/shaders/liquid_depth.frag";
+
     private static final String SAMPLERS_MARKER = "//@SAMPLERS";
+
+    /** blocks of water over a column until it is fully opaque. keep it under 0.875 (the default sea sits that far over the shallowest column) or the resting sea is speckled */
+    private static final float OCEAN_FADE_DEPTH = 0.5F;
+
+    private static final String OCEAN_VERTEX_DECLARATIONS =
+            "uniform float uSeaSurface;\n" +
+                    "varying float vOceanFade;\n";
+
+    private static final String OCEAN_FRAGMENT_DECLARATIONS =
+            "varying float vOceanFade;\n" +
+                    "void applyOceanFade() {\n" +
+                    "    if (vOceanFade >= 1.0) return;\n" +
+                    "    vec2 coord = floor(gl_FragCoord.xy);\n" +
+                    // the same noise as Fog's applyDither(), so the two fades nest instead of fighting
+                    "    float noise = fract(52.9829189 * fract(dot(coord, vec2(0.06711056, 0.00583715))));\n" +
+                    "    if (vOceanFade <= noise) discard;\n" +
+                    "}\n";
 
     private static final long START = System.nanoTime();
 
@@ -56,6 +83,13 @@ public final class LiquidShader {
     private static int fogParamsLocation = -1;
     private static int fogColorLocation = -1;
     private static int fogEyeLocation = -1;
+    private static int seaSurfaceLocation = -1;
+
+    // the depth-only program
+    private static int depthProgram = 0;
+    private static int depthSeaSurfaceLocation = -1;
+    private static int depthFogParamsLocation = -1;
+    private static int depthFogEyeLocation = -1;
 
     private static final FloatBuffer COLORS = BufferUtils.createFloatBuffer(LiquidTile.MAX_LIQUIDS * 4);
     private static final FloatBuffer FOAMS = BufferUtils.createFloatBuffer(LiquidTile.MAX_LIQUIDS * 4);
@@ -64,7 +98,18 @@ public final class LiquidShader {
 
     private LiquidShader() {}
 
-    public static void bind(float ambient) {
+    /** the cheap program for the depth pre-pass: positions and discards only. seaSurface is LiquidLayer.getSurfaceHeight() */
+    public static void bindDepth(float seaSurface) {
+        if (depthProgram == 0) {
+            initDepth();
+        }
+        GL20.glUseProgram(depthProgram);
+        GL20.glUniform1f(depthSeaSurfaceLocation, seaSurface);
+        Fog.upload(depthFogParamsLocation, -1, depthFogEyeLocation);   // the fog colour isn't used here
+    }
+
+    /** the full program for the colour pass. seaSurface is LiquidLayer.getSurfaceHeight() */
+    public static void bind(float ambient, float seaSurface) {
         if (program == 0) {
             init();
         }
@@ -72,6 +117,7 @@ public final class LiquidShader {
         GL20.glUseProgram(program);
         GL20.glUniform1f(timeLocation, (System.nanoTime() - START) * 1.0E-9F);
         GL20.glUniform1f(ambientLocation, ambient);
+        GL20.glUniform1f(seaSurfaceLocation, seaSurface);
         Fog.upload(fogParamsLocation, fogColorLocation, fogEyeLocation);
         uploadLiquids();
         bindTextures();
@@ -161,6 +207,7 @@ public final class LiquidShader {
         fogParamsLocation = GL20.glGetUniformLocation(p, "uFogParams");
         fogColorLocation = GL20.glGetUniformLocation(p, "uFogColor");
         fogEyeLocation = GL20.glGetUniformLocation(p, "uFogEye");
+        seaSurfaceLocation = GL20.glGetUniformLocation(p, "uSeaSurface");
 
         GL20.glUseProgram(p);
         for (int i = 0; i < LiquidTile.MAX_LIQUIDS; i++) {
@@ -171,6 +218,26 @@ public final class LiquidShader {
 
         distortionTexture = loadDistortionTexture();
         program = p;
+    }
+
+    private static void initDepth() {
+        int vs = compile(GL20.GL_VERTEX_SHADER, DEPTH_VERTEX_PATH);
+        int fs = compile(GL20.GL_FRAGMENT_SHADER, DEPTH_FRAGMENT_PATH);
+
+        int p = GL20.glCreateProgram();
+        GL20.glAttachShader(p, vs);
+        GL20.glAttachShader(p, fs);
+        GL20.glLinkProgram(p);
+        GL20.glDeleteShader(vs);
+        GL20.glDeleteShader(fs);
+        if (GL20.glGetProgrami(p, GL20.GL_LINK_STATUS) == 0) {
+            throw new RuntimeException("Liquid depth shader link failed:\n" + GL20.glGetProgramInfoLog(p, 4096));
+        }
+
+        depthSeaSurfaceLocation = GL20.glGetUniformLocation(p, "uSeaSurface");
+        depthFogParamsLocation = GL20.glGetUniformLocation(p, "uFogParams");
+        depthFogEyeLocation = GL20.glGetUniformLocation(p, "uFogEye");
+        depthProgram = p;
     }
 
     // distortion.png as a repeating, smoothly filtered GL texture (a flat grey one if it can't be read)
@@ -249,10 +316,14 @@ public final class LiquidShader {
             return source;
         }
         String renamed = source.substring(0, m.start()) + "void liquidMain()" + source.substring(m.end());
-        String declarations = fragment ? (Fog.GLSL_FRAGMENT_DECLARATIONS + Fog.GLSL_DITHER_DECLARATIONS) : Fog.GLSL_VERTEX_DECLARATIONS;
+        String declarations = fragment
+                ? (Fog.GLSL_FRAGMENT_DECLARATIONS + Fog.GLSL_DITHER_DECLARATIONS + OCEAN_FRAGMENT_DECLARATIONS)
+                : (Fog.GLSL_VERTEX_DECLARATIONS + OCEAN_VERTEX_DECLARATIONS);
+        // texcoord unit 1, s = the sea height this column first gets water at (OceanSurface), a huge negative number for everything else
         String main = fragment
-                ? "\nvoid main() {\n    applyDither();\n    liquidMain();\n    gl_FragColor.rgb = applyFog(gl_FragColor.rgb);\n}\n"
-                : "\nvoid main() {\n    liquidMain();\n    vFogWorldXZ = gl_Vertex.xz;\n}\n";
+                ? "\nvoid main() {\n    applyDither();\n    applyOceanFade();\n    liquidMain();\n    gl_FragColor.rgb = applyFog(gl_FragColor.rgb);\n}\n"
+                : "\nvoid main() {\n    liquidMain();\n    vFogWorldXZ = gl_Vertex.xz;\n"
+                + "    vOceanFade = clamp((uSeaSurface - gl_MultiTexCoord1.s) * " + (1.0F / OCEAN_FADE_DEPTH) + ", 0.0, 1.0);\n}\n";
 
         int afterHeader = 0;
         for (int i = 0; i < 2; i++) {

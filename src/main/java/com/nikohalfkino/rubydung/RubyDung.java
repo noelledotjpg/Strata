@@ -447,6 +447,9 @@ public class RubyDung implements Runnable {
         this.dayNightCycle.tick(this.timer.partialTicks);
         this.session.tick();
 
+        // An autosave under way copies the world a slice per tick instead of all at once.
+        getLevel().tickAutosave();
+
         // Counts play time only: menus, the console and loading pause it, like the world clock.
         if (AutosaveSettings.isEnabled()
                 && ++this.ticksSinceAutosave >= AutosaveSettings.getIntervalMinutes() * 60 * TICKS_PER_SECOND) {

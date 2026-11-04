@@ -2,8 +2,10 @@ package com.nikohalfkino.rubydung.level.tiles;
 
 import com.nikohalfkino.rubydung.level.Chunk;
 import com.nikohalfkino.rubydung.level.Level;
+import com.nikohalfkino.rubydung.level.UnderwaterTint;
 import com.nikohalfkino.rubydung.phys.AABB;
 import com.nikohalfkino.rubydung.render.Billboard;
+import com.nikohalfkino.rubydung.render.BillboardMesh;
 import com.nikohalfkino.rubydung.render.Tessellator;
 import com.nikohalfkino.rubydung.render.Textures;
 
@@ -28,6 +30,20 @@ public abstract class BillboardTile extends Tile {
 
     public float getHeight() {
         return this.height;
+    }
+
+    // -1 = not looked at yet. benign race: the answer is always the same
+    private int translucent = -1;
+
+    /**
+     * whether the sprite has partly transparent pixels (soft edges, a glow) and so has to be blended. sprites that don't (every pixel
+     * fully opaque or fully clear) are drawn as cut-outs, which needs no ordering and lets the depth test reject hidden pixels early
+     */
+    public boolean isTranslucent() {
+        if (this.translucent < 0) {
+            this.translucent = Textures.hasPartialAlpha(getTexture(FACE_NORTH)) ? 1 : 0;
+        }
+        return this.translucent == 1;
     }
 
     public float getSpriteSize() {
@@ -168,7 +184,7 @@ public abstract class BillboardTile extends Tile {
                                        float worldX, float worldY, float worldZ,
                                        float cosYaw, float sinYaw, float scale) {
         renderBillboardBatched(tessellator, level, x, y, z, totalAtlasSlots,
-                worldX, worldY, worldZ, cosYaw, sinYaw, scale, -1.0F, 1.0F);
+                worldX, worldY, worldZ, cosYaw, sinYaw, scale, -1.0F, UnderwaterTint.pack(level, x, y, z));
     }
 
     public void renderBillboardBatched(Tessellator tessellator, Level level, int x, int y, int z, int totalAtlasSlots,
@@ -196,6 +212,68 @@ public abstract class BillboardTile extends Tile {
         Billboard.emit(tessellator, worldX, worldY, worldZ, quadHeight * scale, quadHeight * scale,
                 cosYaw, -sinYaw, minU, minV, maxU, maxV,
                 brightness, brightness, brightness, alpha, true);
+    }
+
+    /**
+     * adds this sprite to its chunk's static billboard mesh (built with the chunk, not every frame): everything that
+     * depends on the camera is left to StaticBillboardShader
+     */
+    public void emitStatic(BillboardMesh mesh, Level level, int x, int y, int z) {
+        // sky and block light go in separately, same as terrain: StaticBillboardShader applies the day/night ambient
+        // every frame (baking it here would freeze it at whatever it was when the chunk last rebuilt).
+        // emissive sprites are fully lit: block light 1 makes the shader's mix come out at 1 whatever the ambient
+        boolean emissive = emitsLight();
+        float sky = emissive ? 1.0F : level.getSkyLight(x, y, z);
+        float block = emissive ? 1.0F : level.getBlockLight(x, y, z);
+        float alpha = UnderwaterTint.pack(level, x, y, z);
+
+        int slot = getAtlasSlot(FACE_NORTH);
+        float extent = getAtlasExtent();
+        float minU = Chunk.atlasU(slot, 0.0F);
+        float maxU = Chunk.atlasU(slot, extent);
+        float minV = Chunk.atlasV(slot, 0.0F);
+        float maxV = Chunk.atlasV(slot, extent);
+
+        int hash = x * 31220 + z * 452389 + y * 93901;
+        if ((hash & 1) == 0) {
+            float temp = minU;
+            minU = maxU;
+            maxU = temp;
+        }
+
+        float worldX = x + 0.5F + getPivotOffsetX();
+        float worldY = y - level.getBillboardDrop(x, y, z);
+        float worldZ = z + 0.5F + getPivotOffsetZ();
+
+        mesh.add(worldX, worldY, worldZ, getSpriteSize(), minU, minV, maxU, maxV, sky, block, alpha);
+    }
+
+    /** Same sprite as renderBillboardBatched, but one quad instead of two. Face culling must be off while it is drawn. */
+    public void renderBillboardSingle(Tessellator tessellator, Level level, int x, int y, int z,
+                                      float worldX, float worldY, float worldZ,
+                                      float cosYaw, float sinYaw, float scale) {
+        float brightness = spriteBrightness(level, x, y, z);
+        float alpha = UnderwaterTint.pack(level, x, y, z);
+
+        int slot = getAtlasSlot(FACE_NORTH);
+        float extent = getAtlasExtent();
+        float minU = Chunk.atlasU(slot, 0.0F);
+        float maxU = Chunk.atlasU(slot, extent);
+        float minV = Chunk.atlasV(slot, 0.0F);
+        float maxV = Chunk.atlasV(slot, extent);
+
+        int hash = x * 31220 + z * 452389 + y * 93901;
+        if ((hash & 1) == 0) {
+            float temp = minU;
+            minU = maxU;
+            maxU = temp;
+        }
+
+        float quadHeight = getSpriteSize();
+
+        Billboard.emitSingle(tessellator, worldX, worldY, worldZ, quadHeight * scale, quadHeight * scale,
+                cosYaw, -sinYaw, minU, minV, maxU, maxV,
+                brightness, brightness, brightness, alpha);
     }
 
     @Override

@@ -8,14 +8,19 @@ import com.nikohalfkino.rubydung.phys.AABB;
 import com.nikohalfkino.rubydung.render.*;
 import com.nikohalfkino.rubydung.util.GameSettings;
 
+import org.lwjgl.BufferUtils;
+
+import java.nio.IntBuffer;
 import java.util.ArrayList;
-import java.util.Comparator;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.lwjgl.opengl.GL11.*;
+import static org.lwjgl.opengl.GL13.GL_TEXTURE1;
+import static org.lwjgl.opengl.GL13.glMultiTexCoord2f;
 
 public class LevelRenderer implements LevelListener {
 
@@ -24,6 +29,7 @@ public class LevelRenderer implements LevelListener {
     private final Tessellator tessellator;
     private final Level level;
     private final Chunk[] chunks;
+    private final OceanSurface ocean;
 
     private final int chunkAmountX;
     private final int chunkAmountY;
@@ -34,6 +40,7 @@ public class LevelRenderer implements LevelListener {
 
         this.tessellator = new Tessellator();
         this.level = level;
+        this.ocean = new OceanSurface(level);
 
         // rounded up, so a world whose size isn't a multiple of CHUNK_SIZE still has a (smaller) chunk on its edge
         this.chunkAmountX = (level.width + CHUNK_SIZE - 1) / CHUNK_SIZE;
@@ -78,23 +85,60 @@ public class LevelRenderer implements LevelListener {
     private boolean visibleChunksValid = false;
 
     private boolean withinRenderDistance(AABB box, double extra) {
+        return withinRenderDistance(box.minX, box.minZ, box.maxX, box.maxZ, extra);
+    }
+
+    private boolean withinRenderDistance(double minX, double minZ, double maxX, double maxZ, double extra) {
         int distance = GameSettings.getRenderDistance();
         if (distance <= 0 || Double.isNaN(this.viewX)) {
             return true;
         }
         double reach = distance * (double) CHUNK_SIZE + extra;
-        double dx = Math.max(Math.max(box.minX - this.viewX, this.viewX - box.maxX), 0.0);
-        double dz = Math.max(Math.max(box.minZ - this.viewZ, this.viewZ - box.maxZ), 0.0);
+        double dx = Math.max(Math.max(minX - this.viewX, this.viewX - maxX), 0.0);
+        double dz = Math.max(Math.max(minZ - this.viewZ, this.viewZ - maxZ), 0.0);
         return dx * dx + dz * dz <= reach * reach;
+    }
+
+    // one instance, so the ocean's per-frame culling doesn't allocate a lambda
+    private final OceanSurface.DistanceTest oceanRange = (minX, minZ, maxX, maxZ) -> withinRenderDistance(minX, minZ, maxX, maxZ, 0.0);
+
+    // The chunks worth testing each frame: the ones with something to draw or still to build (most of a big world is air or buried),
+    // and the ones with sprites. Rebuilt only when a chunk reports a change (Chunk.activeVersion), not every frame.
+    private Chunk[] activeChunks = new Chunk[0];
+    private int activeCount = 0;
+    private Chunk[] billboardActive = new Chunk[0];
+    private int billboardActiveCount = 0;
+    private int activeSeenVersion = -1;
+
+    private void refreshActiveChunks() {
+        if (this.activeSeenVersion == Chunk.activeVersion) {
+            return;
+        }
+        this.activeSeenVersion = Chunk.activeVersion;
+        if (this.activeChunks.length != this.chunks.length) {
+            this.activeChunks = new Chunk[this.chunks.length];
+            this.billboardActive = new Chunk[this.chunks.length];
+        }
+        int all = 0;
+        int sprites = 0;
+        for (Chunk chunk : this.chunks) {
+            if (chunk.hasBillboards()) {
+                this.billboardActive[sprites++] = chunk;
+            }
+            if (chunk.isDirty() || chunk.hasGeometry()) {
+                this.activeChunks[all++] = chunk;
+            }
+        }
+        this.activeCount = all;
+        this.billboardActiveCount = sprites;
     }
 
     private void collectVisibleChunks() {
         Frustum frustum = Frustum.getFrustum();
         this.visibleChunks.clear();
-        for (Chunk chunk : this.chunks) {
-            if (!chunk.isDirty() && !chunk.hasGeometry()) {
-                continue;
-            }
+        refreshActiveChunks();
+        for (int i = 0; i < this.activeCount; i++) {
+            Chunk chunk = this.activeChunks[i];
             if (withinRenderDistance(chunk.boundingBox, 0.0) && frustum.cubeInFrustum(chunk.boundingBox)) {
                 this.visibleChunks.add(chunk);
             }
@@ -103,6 +147,11 @@ public class LevelRenderer implements LevelListener {
     }
 
     public void render(int layer) {
+        if (layer == 1) {
+            // terrain is one display list per chunk now (layer 0 holds the lit and the shadowed faces, see Tile.LAYER_ALL),
+            // so there is no second pass. Kept so existing callers don't have to change.
+            return;
+        }
         Textures.enableAlphaTest();
 
         Chunk.rebuiltThisFrame = 0;
@@ -110,16 +159,56 @@ public class LevelRenderer implements LevelListener {
         if (layer == 0 || !this.visibleChunksValid) {
             collectVisibleChunks();
         }
+        if (layer == 0) {
+            FrameProfiler.lap("chunk-collect");
+        }
+
+        // the terrain shader tints what is under the sea from these, so a new sea height needs no chunk rebuild
+        LiquidLayer seas = this.level.getLiquids();
+        boolean sea = seas.hasOcean() && seas.getOceanLiquid() != null;
+        TerrainShader.setOcean(sea ? seas.getSurfaceHeight() : -1000.0F, sea ? seas.getOceanLiquid().getLiquidIndex() : 0);
+
+        // every chunk's display list for this layer goes out in one glCallLists call, with the atlas bound once
+        this.terrainIds = fillLists(this.terrainIds, layer, false);
 
         TerrainShader.bind(this.level.getSkyAmbient());
         try {
-            for (int i = 0; i < this.visibleChunks.size(); i++) {
-                Chunk chunk = this.visibleChunks.get(i);
-                chunk.render(layer);
+            if (this.terrainIds.limit() > 0) {
+                glEnable(GL_TEXTURE_2D);
+                Textures.bind(Chunk.getAtlasTexture());
+                glCallLists(this.terrainIds);
+                glDisable(GL_TEXTURE_2D);
             }
         } finally {
             TerrainShader.unbind();
         }
+    }
+
+    private IntBuffer terrainIds = BufferUtils.createIntBuffer(4096);
+    private IntBuffer liquidIds = BufferUtils.createIntBuffer(1024);
+
+    // the display list ids of a layer for every visible chunk that has something in it (rebuilding dirty chunks on the way)
+    private IntBuffer fillLists(IntBuffer ids, int layer, boolean liquidOnly) {
+        ids.clear();
+        for (int i = 0; i < this.visibleChunks.size(); i++) {
+            Chunk chunk = this.visibleChunks.get(i);
+            if (liquidOnly && !chunk.hasLiquid()) {
+                continue;
+            }
+            int list = chunk.getList(layer);
+            if (list < 0) {
+                continue;
+            }
+            if (!ids.hasRemaining()) {
+                IntBuffer bigger = BufferUtils.createIntBuffer(ids.capacity() * 2);
+                ids.flip();
+                bigger.put(ids);
+                ids = bigger;
+            }
+            ids.put(list);
+        }
+        ids.flip();
+        return ids;
     }
 
     public void renderLiquids() {
@@ -138,16 +227,25 @@ public class LevelRenderer implements LevelListener {
         glDisable(GL_ALPHA_TEST);
         glDisable(GL_CULL_FACE);
 
-        LiquidShader.bind(this.level.getSkyAmbient());
+        this.liquidIds = fillLists(this.liquidIds, Chunk.LAYER_LIQUID, true);
+
+        float seaSurface = this.level.getLiquids().getSurfaceHeight();
+        this.ocean.prepare(Frustum.getFrustum(), this.oceanRange);
+        FrameProfiler.lap("ocean-prepare");   // dirty tile rebuilds + culling
+
         try {
+            // pass 1: depth only, with the cheap program. it discards exactly what the colour pass discards
+            LiquidShader.bindDepth(seaSurface);
             glDepthMask(true);
             glColorMask(false, false, false, false);
-            drawLiquidChunks();
+            drawLiquidChunks("ocean-depth", "chunks-depth");
 
+            // pass 2: the full shader, only where the nearest water layer is
+            LiquidShader.bind(this.level.getSkyAmbient(), seaSurface);
             glColorMask(true, true, true, true);
             glDepthMask(false);
             glDepthFunc(GL_LEQUAL);
-            drawLiquidChunks();
+            drawLiquidChunks("ocean-color", "chunks-color");
         } finally {
             glColorMask(true, true, true, true);
             glDepthFunc(depthFunc);
@@ -165,13 +263,16 @@ public class LevelRenderer implements LevelListener {
         }
     }
 
-    private void drawLiquidChunks() {
-        for (int i = 0; i < this.visibleChunks.size(); i++) {
-            Chunk chunk = this.visibleChunks.get(i);
-            if (chunk.hasLiquid()) {
-                chunk.render(Chunk.LAYER_LIQUID);
-            }
+    private void drawLiquidChunks(String oceanStage, String chunksStage) {
+        this.ocean.draw();
+        FrameProfiler.lap(oceanStage);
+
+        if (this.liquidIds.limit() > 0) {
+            // the ocean's display lists leave their last "sea height" as the current texcoord 1, the chunk liquids must not fade
+            glMultiTexCoord2f(GL_TEXTURE1, OceanSurface.NO_FADE, 0.0F);
+            glCallLists(this.liquidIds);
         }
+        FrameProfiler.lap(chunksStage);
     }
 
     private int buildCursor = 0;
@@ -345,7 +446,9 @@ public class LevelRenderer implements LevelListener {
     }
 
     private static final float MAX_BILLBOARD_OVERHANG = 1.0F;
-    private final float maxBillboardSize;
+    private float maxBillboardSize;
+    // sprite sizes come from the texture atlas, which is built after this renderer, so they are read on the first frame
+    private boolean billboardSizeResolved = false;
 
     private static float findMaxBillboardSize() {
         float max = 1.0F;
@@ -362,103 +465,148 @@ public class LevelRenderer implements LevelListener {
         renderBillboards(cameraYaw, cameraPitch, Double.NaN, Double.NaN, Double.NaN);
     }
 
-    public void renderBillboards(float cameraYaw, float cameraPitch, double eyeX, double eyeY, double eyeZ) {
-        boolean scaleByDistance = !Double.isNaN(eyeX);
+    // How far a sprite stays visible, per block of sprite size: the reach is size * this, so big sprites (trees) stay
+    // visible far out and small ones (plants, a few pixels from afar) are dropped earlier. The cut-off is made per
+    // sprite in StaticBillboardShader, so it costs nothing on the CPU. A finite render distance applies on top.
+    private static final float BILLBOARD_REACH_PER_BLOCK = 400.0F;
 
-        if (scaleByDistance) {
-            CameraRay.set(eyeX, eyeY, eyeZ, cameraYaw, cameraPitch);
-        } else {
+    // hard upper bound whatever the size
+    private static final float BILLBOARD_MAX_REACH = 4096.0F;
+
+    // Sprites whose texture has only fully opaque or fully clear pixels (see BillboardTile.isTranslucent) are cut-outs: drawn first,
+    // without blending, near to far, so the depth test throws away the pixels hidden behind nearer sprites early. Only the sprites with
+    // partly transparent pixels are blended, afterwards and far to near. Those cut-outs keep pixels from half alpha up.
+    private static final float CUTOUT_ALPHA = 0.5F;
+    private static final float BLENDED_ALPHA = 0.01F;
+
+    // float -> int whose signed order matches the float order
+    private static int sortableBits(float value) {
+        int bits = Float.floatToIntBits(value);
+        return bits ^ ((bits >> 31) & 0x7FFFFFFF);
+    }
+
+    private boolean withinReach(AABB box, double reach) {
+        if (Double.isNaN(this.viewX)) {
+            return true;
+        }
+        double dx = Math.max(Math.max(box.minX - this.viewX, this.viewX - box.maxX), 0.0);
+        double dz = Math.max(Math.max(box.minZ - this.viewZ, this.viewZ - box.maxZ), 0.0);
+        return dx * dx + dz * dz <= reach * reach;
+    }
+
+    private long[] billboardChunkKeys;
+    private Chunk[] billboardChunkRefs;
+    private IntBuffer billboardIds = BufferUtils.createIntBuffer(1024);
+
+    /**
+     * The sprites are static geometry built with their chunk (see Chunk.LAYER_BILLBOARD and BillboardMesh), drawn as
+     * display lists with StaticBillboardShader, which turns them towards the camera on the GPU. Per frame the CPU only
+     * picks the chunks and sorts them far to near.
+     */
+    public void renderBillboards(float cameraYaw, float cameraPitch, double eyeX, double eyeY, double eyeZ) {
+        if (Double.isNaN(eyeX)) {
+            // the shader needs the eye for the growth with distance
             CameraRay.setAngles(cameraYaw, cameraPitch);
+            return;
+        }
+        CameraRay.set(eyeX, eyeY, eyeZ, cameraYaw, cameraPitch);
+
+        if (!this.billboardSizeResolved) {
+            // sprite sizes come from the atlas, which exists by the first frame
+            this.maxBillboardSize = findMaxBillboardSize();
+            this.billboardSizeResolved = true;
         }
 
         Frustum frustum = Frustum.getFrustum();
-        List<int[]> visibleBillboards = new ArrayList<>();
 
         float maxBillboardHeight = this.maxBillboardSize;
         float maxScaleFactor = 2.0F;
         float maxOverhang = Math.max(MAX_BILLBOARD_OVERHANG, (maxBillboardHeight * maxScaleFactor) / 2.0F);
 
-        for (Chunk chunk : this.chunks) {
-            if (chunk.getBillboardPositions().isEmpty() || !withinRenderDistance(chunk.boundingBox, maxOverhang)) {
-                continue;
-            }
-            AABB billboardCullBox = chunk.boundingBox.grow(maxOverhang, maxBillboardHeight * maxScaleFactor, maxOverhang);
-            if (!frustum.cubeInFrustum(billboardCullBox)) {
-                continue;
-            }
-
-            for (int[] pos : chunk.getBillboardPositions()) {
-                int x = pos[0], y = pos[1], z = pos[2];
-                Tile tile = Tile.byId(this.level.getTile(x, y, z));
-                if (tile == null || !tile.isBillboard()) {
-                    continue;
-                }
-                visibleBillboards.add(pos);
-            }
+        int renderDistance = GameSettings.getRenderDistance();
+        double reach = Math.min(BILLBOARD_MAX_REACH, maxBillboardHeight * BILLBOARD_REACH_PER_BLOCK);
+        if (renderDistance > 0) {
+            reach = Math.min(reach, renderDistance * (double) CHUNK_SIZE + maxOverhang);
         }
 
-        if (visibleBillboards.isEmpty()) {
+        if (this.billboardChunkKeys == null) {
+            this.billboardChunkKeys = new long[this.chunks.length];
+            this.billboardChunkRefs = new Chunk[this.chunks.length];
+        }
+
+        int count = 0;
+        refreshActiveChunks();   // a chunk rebuilt by the terrain pass may have gained or lost its sprites since
+        for (int i = 0; i < this.billboardActiveCount; i++) {
+            Chunk chunk = this.billboardActive[i];
+            if (!withinReach(chunk.boundingBox, reach)) {
+                continue;
+            }
+            // a sprite can stick out of its chunk (a tree's crown), so the chunk is tested with a grown box
+            AABB cullBox = chunk.boundingBox.grow(maxOverhang, maxBillboardHeight * maxScaleFactor, maxOverhang);
+            if (!frustum.cubeInFrustum(cullBox)) {
+                continue;
+            }
+
+            double cx = (chunk.boundingBox.minX + chunk.boundingBox.maxX) * 0.5 - eyeX;
+            double cy = (chunk.boundingBox.minY + chunk.boundingBox.maxY) * 0.5 - eyeY;
+            double cz = (chunk.boundingBox.minZ + chunk.boundingBox.maxZ) * 0.5 - eyeZ;
+            float distanceSq = (float) (cx * cx + cy * cy + cz * cz);
+
+            // far to near (the negated distance sorts ascending), the index rides in the low bits. the cut-outs walk the same order backwards
+            this.billboardChunkKeys[count] = ((long) sortableBits(-distanceSq) << 32) | count;
+            this.billboardChunkRefs[count] = chunk;
+            count++;
+        }
+        FrameProfiler.lap("bb-collect");
+
+        if (count == 0) {
+            return;
+        }
+        Arrays.sort(this.billboardChunkKeys, 0, count);
+
+        // chunks that were sorted are looked up through their index, so the refs array stays in collection order.
+        // cut-outs are listed near to far, blended sprites far to near
+        this.billboardCutoutIds = fillBillboardIds(this.billboardCutoutIds, Chunk.LAYER_BILLBOARD_CUTOUT, count, true);
+        this.billboardIds = fillBillboardIds(this.billboardIds, Chunk.LAYER_BILLBOARD, count, false);
+        FrameProfiler.lap("bb-sort");
+
+        if (this.billboardCutoutIds.limit() == 0 && this.billboardIds.limit() == 0) {
             return;
         }
 
-        float yawRad = (float) Math.toRadians(cameraYaw);
-        float pitchRad = (float) Math.toRadians(cameraPitch);
-        final float forwardX = (float) (Math.sin(yawRad) * Math.cos(pitchRad));
-        final float forwardY = (float) -Math.sin(pitchRad);
-        final float forwardZ = (float) -(Math.cos(yawRad) * Math.cos(pitchRad));
+        // the quad is built by the shader, one per sprite, and is visible from either side: face culling is off
+        boolean cull = glIsEnabled(GL_CULL_FACE);
+        glDisable(GL_CULL_FACE);
 
-        visibleBillboards.sort(new Comparator<int[]>() {
-            @Override
-            public int compare(int[] a, int[] b) {
-                float depthA = (a[0] + 0.5F) * forwardX + (a[1] + 0.5F) * forwardY + (a[2] + 0.5F) * forwardZ;
-                float depthB = (b[0] + 0.5F) * forwardX + (b[1] + 0.5F) * forwardY + (b[2] + 0.5F) * forwardZ;
-                return Float.compare(depthB, depthA);
-            }
-        });
-
-        BillboardShader.bind();
+        float rotRad = (float) Math.toRadians(-cameraYaw);
+        float rightX = (float) Math.cos(rotRad);
+        float rightZ = (float) -Math.sin(rotRad);
+        StaticBillboardShader.bind(eyeX, eyeY, eyeZ, rightX, rightZ, BILLBOARD_REACH_PER_BLOCK, BILLBOARD_MAX_REACH,
+                this.level.getSkyAmbient(), CUTOUT_ALPHA);
         try {
             glEnable(GL_TEXTURE_2D);
             glEnable(GL_ALPHA_TEST);
             glAlphaFunc(GL_GREATER, 0.01F);
 
-            glEnable(GL_BLEND);
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
-            glDepthMask(false);
+            // drawn before the liquids and writing depth: the water surface is blended over whatever is behind it, so a sprite under
+            // the sea is seen through the water, and one above the sea is not covered by it (the water's depth would hide it otherwise)
+            glDepthMask(true);
 
             Textures.bind(Chunk.getAtlasTexture());
 
-            float rotRad = (float) Math.toRadians(-cameraYaw);
-            float cosYaw = (float) Math.cos(rotRad);
-            float sinYaw = (float) Math.sin(rotRad);
-
-            this.tessellator.init();
-            for (int[] pos : visibleBillboards) {
-                int x = pos[0], y = pos[1], z = pos[2];
-                Tile tile = Tile.byId(this.level.getTile(x, y, z));
-                if (!(tile instanceof BillboardTile)) {
-                    continue;
-                }
-                BillboardTile billboardTile = (BillboardTile) tile;
-
-                float worldX = x + 0.5F + billboardTile.getPivotOffsetX();
-                float worldY = y - this.level.getBillboardDrop(x, y, z);
-                float worldZ = z + 0.5F + billboardTile.getPivotOffsetZ();
-
-                float scale = 1.0F;
-                if (scaleByDistance) {
-                    double dx = eyeX - worldX;
-                    double dy = eyeY - worldY;
-                    double dz = eyeZ - worldZ;
-                    float distance = (float) Math.sqrt(dx * dx + dy * dy + dz * dz);
-                    scale = BillboardTile.getDistanceScale(distance);
-                }
-
-                billboardTile.renderBillboardBatched(this.tessellator, this.level, x, y, z, Chunk.getTotalAtlasSlots(),
-                        worldX, worldY, worldZ, cosYaw, sinYaw, scale);
+            if (this.billboardCutoutIds.limit() > 0) {
+                glDisable(GL_BLEND);
+                glCallLists(this.billboardCutoutIds);
+                FrameProfiler.lap("bb-cutout");
             }
-            this.tessellator.flush();
+
+            if (this.billboardIds.limit() > 0) {
+                // over the cut-outs, which are already in the depth buffer
+                StaticBillboardShader.setCutoff(BLENDED_ALPHA);
+                glEnable(GL_BLEND);
+                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                glCallLists(this.billboardIds);
+            }
 
             glDepthMask(true);
             glDisable(GL_BLEND);
@@ -466,9 +614,37 @@ public class LevelRenderer implements LevelListener {
             glEnable(GL_ALPHA_TEST);
             glAlphaFunc(GL_GREATER, 0.1F);
         } finally {
-            BillboardShader.unbind();
+            StaticBillboardShader.unbind();
             glDisable(GL_TEXTURE_2D);
+            if (cull) {
+                glEnable(GL_CULL_FACE);
+            }
         }
+        FrameProfiler.lap("bb-draw");
+    }
+
+    private IntBuffer billboardCutoutIds = BufferUtils.createIntBuffer(1024);
+
+    // the display lists of one sprite layer for the culled chunks, in the sorted far-to-near order or (nearToFar) the reverse
+    private IntBuffer fillBillboardIds(IntBuffer ids, int layer, int count, boolean nearToFar) {
+        ids.clear();
+        for (int n = 0; n < count; n++) {
+            int i = nearToFar ? count - 1 - n : n;
+            Chunk chunk = this.billboardChunkRefs[(int) this.billboardChunkKeys[i]];
+            int list = chunk.getList(layer);
+            if (list < 0) {
+                continue;
+            }
+            if (!ids.hasRemaining()) {
+                IntBuffer bigger = BufferUtils.createIntBuffer(ids.capacity() * 2);
+                ids.flip();
+                bigger.put(ids);
+                ids = bigger;
+            }
+            ids.put(list);
+        }
+        ids.flip();
+        return ids;
     }
 
     public void renderHit(HitResult hitResult) {
@@ -635,6 +811,7 @@ public class LevelRenderer implements LevelListener {
     }
 
     public void dispose() {
+        this.ocean.dispose();
         if (this.chunks != null) {
             for (Chunk chunk : this.chunks) {
                 if (chunk != null) {
@@ -646,11 +823,13 @@ public class LevelRenderer implements LevelListener {
 
     @Override
     public void lightColumnChanged(int x, int z, int minY, int maxY) {
+        this.ocean.lightChanged(x, z, minY, maxY);
         setDirty(x - 1, minY - 1, z - 1, x + 1, maxY + 1, z + 1);
     }
 
     @Override
     public void tileChanged(int x, int y, int z) {
+        this.ocean.cellChanged(x, y, z);
         setDirty(x - 1, y - 2, z - 1, x + 1, y + 2, z + 1, true);
     }
 

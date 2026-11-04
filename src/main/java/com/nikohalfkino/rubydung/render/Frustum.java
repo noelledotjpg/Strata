@@ -151,29 +151,21 @@ public class Frustum {
         return true;
     }
 
+    /**
+     * a box is outside as soon as, for one plane, even its corner farthest along the plane's normal is behind it. That
+     * corner is picked from the signs of the normal, so each plane costs one dot product instead of up to eight
+     * (same answer as testing all eight corners)
+     */
     public boolean cubeInFrustum(float minX, float minY, float minZ, float maxX, float maxY, float maxZ) {
-
         for (int i = 0; i < 6; i++) {
-            if (m_Frustum[i][A] * minX + m_Frustum[i][B] * minY + m_Frustum[i][C] * minZ + m_Frustum[i][D] > 0)
-                continue;
-            if (m_Frustum[i][A] * maxX + m_Frustum[i][B] * minY + m_Frustum[i][C] * minZ + m_Frustum[i][D] > 0)
-                continue;
-            if (m_Frustum[i][A] * minX + m_Frustum[i][B] * maxY + m_Frustum[i][C] * minZ + m_Frustum[i][D] > 0)
-                continue;
-            if (m_Frustum[i][A] * maxX + m_Frustum[i][B] * maxY + m_Frustum[i][C] * minZ + m_Frustum[i][D] > 0)
-                continue;
-            if (m_Frustum[i][A] * minX + m_Frustum[i][B] * minY + m_Frustum[i][C] * maxZ + m_Frustum[i][D] > 0)
-                continue;
-            if (m_Frustum[i][A] * maxX + m_Frustum[i][B] * minY + m_Frustum[i][C] * maxZ + m_Frustum[i][D] > 0)
-                continue;
-            if (m_Frustum[i][A] * minX + m_Frustum[i][B] * maxY + m_Frustum[i][C] * maxZ + m_Frustum[i][D] > 0)
-                continue;
-            if (m_Frustum[i][A] * maxX + m_Frustum[i][B] * maxY + m_Frustum[i][C] * maxZ + m_Frustum[i][D] > 0)
-                continue;
-
-            return false;
+            float[] plane = m_Frustum[i];
+            float px = plane[A] > 0 ? maxX : minX;
+            float py = plane[B] > 0 ? maxY : minY;
+            float pz = plane[C] > 0 ? maxZ : minZ;
+            if (plane[A] * px + plane[B] * py + plane[C] * pz + plane[D] <= 0) {
+                return false;
+            }
         }
-
         return true;
     }
 

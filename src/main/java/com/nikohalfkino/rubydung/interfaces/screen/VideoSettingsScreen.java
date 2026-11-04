@@ -40,8 +40,8 @@ public class VideoSettingsScreen extends MenuScreen {
     private static final int FPS_UNLIMITED_AT = 245;
 
     // pixel size slider: each world pixel is PIXEL_MIN..PIXEL_MAX screen pixels wide
-    private static final int PIXEL_MIN = 2;
-    private static final int PIXEL_MAX = 12;
+    private static final int PIXEL_MIN = GameSettings.MIN_PIXEL_SIZE;
+    private static final int PIXEL_MAX = GameSettings.MAX_PIXEL_SIZE;
 
     // render distance slider: RENDER_MIN..RENDER_MAX chunks of 16 blocks, "Unlimited" at the end
     private static final int RENDER_MIN = GameSettings.MIN_RENDER_DISTANCE;

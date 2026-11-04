@@ -454,6 +454,7 @@ public class WorldListScreen extends MenuScreen {
             switch (w.worldType) {
                 case NATURAL: parts.add("Natural"); break;
                 case ISLAND:  parts.add("Island");  break;
+                case ARCHIPELAGO: parts.add("Archipelago"); break;
                 default:      parts.add("Flat");    break;
             }
         }
@@ -464,6 +465,7 @@ public class WorldListScreen extends MenuScreen {
                 case DEFAULT: parts.add("Default"); break;
                 case LARGE:   parts.add("Large");   break;
                 case INSANE:  parts.add("XL");      break;
+                case XXL:     parts.add("XXL");     break;
                 default:      parts.add(w.worldSize.name()); break;
             }
         }

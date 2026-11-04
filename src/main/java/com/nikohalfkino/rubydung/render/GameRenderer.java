@@ -85,7 +85,19 @@ public class GameRenderer {
         return CloudRenderer.HEIGHT_OFFSET;
     }
 
+    // Start the game with -Dstrata.profile.sync=true to make every profiler stage wait for the GPU (glFinish), so a stage's
+    // time includes the GPU work it queued. Slower overall, but it shows which stage is GPU-bound. Off by default.
+    private static final boolean SYNC_PROFILE = Boolean.getBoolean("strata.profile.sync");
+
+    private static void lap(String stage) {
+        if (SYNC_PROFILE) {
+            glFinish();
+        }
+        FrameProfiler.lap(stage);
+    }
+
     public void render(float partialTicks) {
+        FrameProfiler.begin();
         boolean playing = this.game.hasWorld() && this.game.getCurrentScreen() == null
                 && !this.game.getConsole().isOpen() && Display.isActive();
 
@@ -119,6 +131,7 @@ public class GameRenderer {
         int mouseY = wm.toLogicalY(Mouse.getY());
 
         this.game.getInputHandler().handle(playing, mouseX, mouseY);
+        lap("input+pick");
 
         // Black everywhere, then everything below is clipped to the game area.
         wm.beginFrame();
@@ -138,6 +151,7 @@ public class GameRenderer {
             if (this.game.getCurrentScreen() == null) {
                 this.game.getLevel().getLiquids().update(frameSeconds);
             }
+            lap("liquid-sim");
 
             // The world is drawn into the frame's viewport; without a frame (closed, or window
             // too small) it fills the whole window.
@@ -173,6 +187,7 @@ public class GameRenderer {
 
             float cameraPartialTicks = playing ? partialTicks : 1.0F;
             this.playerCamera.update(player, this.game.getLevel(), cameraPartialTicks, playing);
+            lap("frame+camera");
             setupCamera(viewWidth, viewHeight);
 
             // Where the camera is (the player's eyes in first person).
@@ -204,12 +219,14 @@ public class GameRenderer {
             this.skyboxRenderer.setSolid(freecam);
 
             this.skyboxRenderer.render(skyX, skyY, skyZ, cycle);
+            lap("dome");
             // The sun and moon are drawn between the white (lower) and coloured (upper) cloud layers.
             this.cloudRenderer.render(skyX, skyY, skyZ, cycle,
                     () -> this.skyboxRenderer.renderSunAndMoon(skyX, skyY, skyZ, cycle));
 
             // Distance fog at the edge of the render distance (the terrain and liquid shaders apply it themselves,
             // the fixed function fog is only switched on for the billboards).
+            lap("sky+clouds");
             Fog.update(GameSettings.getRenderDistance() * (float) Chunk.SIZE, fc, eyeX, eyeZ);
             glDisable(GL_FOG);
 
@@ -218,17 +235,24 @@ public class GameRenderer {
 
             glEnable(GL_TEXTURE_2D);
             levelRenderer.render(1);
-
-            // after all opaque terrain: the liquids blend over it
-            levelRenderer.renderLiquids();
+            lap("terrain");
 
             // Before the billboards, so those behind the player are hidden by it.
             this.playerRenderer.render(this.game.getLevel(), player, this.playerCamera, cameraPartialTicks);
+            lap("player");
 
             levelRenderer.renderBillboards(this.playerCamera.getYaw(), this.playerCamera.getPitch(),
                     eyeX, eyeY, eyeZ);
 
+            lap("player+billboards");
+
+            // last: the liquids blend over everything already drawn, billboards and the player included, so what is
+            // under the water is seen through it and what is above it isn't covered by the water's depth
+            levelRenderer.renderLiquids();
+            lap("liquids");
+
             glDisable(GL_TEXTURE_2D);
+            lap("hit+debug");
 
             HitResult hitResult = this.game.getPlayerInteraction().getHitResult();
             if (hitResult != null && playing) {
@@ -266,8 +290,11 @@ public class GameRenderer {
         FpsHud.render(this.game, this.game.getFont(), width, height);
 
         wm.endFrame();
+        lap("hud+ui");
 
         Display.update();
+        lap("swap");
+        FrameProfiler.endFrame();
     }
 
     private void setupCamera(int width, int height) {

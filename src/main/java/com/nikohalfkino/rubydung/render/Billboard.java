@@ -65,6 +65,24 @@ public final class Billboard {
         }
     }
 
+    /**
+     * one quad instead of the two of emit(..., doubleSided): the mirrored one, which is the one that faces the camera
+     * with back-face culling on. Half the vertices to build and draw, but the caller must turn face culling off so the
+     * sprite is visible whichever way round the quad's winding ends up.
+     */
+    public static void emitSingle(Tessellator t, double cx, double y, double cz, float width, float height,
+                                  double rightX, double rightZ,
+                                  float u0, float v0, float u1, float v1,
+                                  float r, float g, float b, float a) {
+        corners(cx, y, cz, width, height, rightX, rightZ);
+        float[] c = CORNERS;
+
+        vertex(t, c, 3, u0, v0, r, g, b, a);
+        vertex(t, c, 0, u1, v0, r, g, b, a);
+        vertex(t, c, 9, u1, v1, r, g, b, a);
+        vertex(t, c, 6, u0, v1, r, g, b, a);
+    }
+
     private static void vertex(Tessellator t, float[] c, int i, float u, float v,
                                float r, float g, float b, float a) {
         t.color(r, g, b, a);

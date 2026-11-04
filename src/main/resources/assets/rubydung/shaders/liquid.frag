@@ -15,6 +15,10 @@ const float TINT = 0.35;
 const float COLOR_LEVELS = 32.0;
 // turbulence reach in blocks per unit of the liquid's warp setting
 const float WARP_BLOCKS = 0.75;
+// the warp fades out with distance from the eye (blocks): full strength up to START, none from END on.
+// past END the four sin() calls are skipped altogether
+const float WARP_FADE_START = 24.0;
+const float WARP_FADE_END   = 56.0;
 // opacity of the shore rim (it is shaped by the same foam texture as the foam, just always present)
 const float RIM_STRENGTH = 0.7;
 // half the thickness, in blocks, of a pane (2 px collision) when the shader draws its footprint for the shore
@@ -43,6 +47,9 @@ varying vec2  vSheet;
 varying vec4  vEdges;
 varying vec4  vCorners;
 varying vec2  vPane;
+varying vec4  vRectA;
+varying vec4  vRectB;
+varying vec4  vRectC;
 varying float vTop;
 varying float vFoamWeight;
 varying float vLiqIndex;
@@ -73,6 +80,10 @@ float shoreDistance(vec2 u) {
     // panes (metal bars, framed glass): a thin plane through the middle of the cell, running along x and/or z
     if (vPane.x > 0.5) sdf = min(sdf, boxDistance(u, vec2(0.0, 0.5 - PANE_HALF), vec2(1.0, 0.5 + PANE_HALF)));
     if (vPane.y > 0.5) sdf = min(sdf, boxDistance(u, vec2(0.5 - PANE_HALF, 0.0), vec2(0.5 + PANE_HALF, 1.0)));
+    // the real footprints of partial shapes (doors, panes, stairs, slabs, sub tiles): the shore follows their box, not the cell
+    if (vRectA.z > vRectA.x) sdf = min(sdf, boxDistance(u, vRectA.xy, vRectA.zw));
+    if (vRectB.z > vRectB.x) sdf = min(sdf, boxDistance(u, vRectB.xy, vRectB.zw));
+    if (vRectC.z > vRectC.x) sdf = min(sdf, boxDistance(u, vRectC.xy, vRectC.zw));
     return sdf;
 }
 
@@ -95,7 +106,8 @@ void main() {
     float t    = time * vMotion.y;
     bool  top  = vTop > 0.5;
     int   idx  = int(vLiqIndex + 0.5);
-    float warp = vMotion.x * WARP_BLOCKS;
+    float eyeDist = length(vFogWorldXZ - uFogEye);   // both declared by LiquidShader's fog injection
+    float warp = vMotion.x * WARP_BLOCKS * (1.0 - smoothstep(WARP_FADE_START, WARP_FADE_END, eyeDist));
     float P    = PIXELS_PER_BLOCK;
 
     // top face uses XZ, sides unroll along the wall
@@ -106,8 +118,10 @@ void main() {
 
     // Quake-style turbulence, in blocks; then snap again so we always read whole texels
     vec2 w = pp;
-    w.x += warp * (sin(pp.y * 4.0 + t)        + 0.4 * sin(pp.y * 7.3 - t * 0.6));
-    w.y += warp * (sin(pp.x * 4.0 + t * 1.07) + 0.4 * sin(pp.x * 8.1 + t * 0.8));
+    if (warp > 0.0) {
+        w.x += warp * (sin(pp.y * 4.0 + t)        + 0.4 * sin(pp.y * 7.3 - t * 0.6));
+        w.y += warp * (sin(pp.x * 4.0 + t * 1.07) + 0.4 * sin(pp.x * 8.1 + t * 0.8));
+    }
     vec2 uv = (floor(w * P) + 0.5) / P;      // position in blocks, on the texel grid
 
     // the texture is a sheet of vSheet.x * vSheet.y cells laid over the world, like WrappedTile:

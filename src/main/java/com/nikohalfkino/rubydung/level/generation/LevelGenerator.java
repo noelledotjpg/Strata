@@ -16,16 +16,19 @@ public final class LevelGenerator {
         // saved by ordinal (type.dat, level.dat), so only ever append new types
         FLAT,
         NATURAL,    // inland terrain: no ocean, lakes, beaches or sea stacks
-        ISLAND      // natural terrain surrounded by ocean, with lakes, beaches, sea stacks and arches
+        ISLAND,     // natural terrain surrounded by ocean, with lakes, beaches, sea stacks and arches
+        ARCHIPELAGO // many stepped islands scattered over the whole map, with beaches, sea stacks and arches
     }
 
     public enum WorldSize {
         // about a third of a natural world is island and the rest ocean, so these are bigger than the land they hold.
-        // all multiples of Chunk.SIZE. memory grows with width * height * depth (the block, data, liquid and light arrays), so XL stops at 768 (about 470 MB of arrays, give the JVM at least -Xmx2g)
+        // all multiples of Chunk.SIZE. memory grows with width * height * depth (the block, data, liquid and light arrays):
+        // XL is 768 (about 470 MB of arrays, give the JVM at least -Xmx2g), XXL is 1024 (about 840 MB, give it -Xmx4g)
         TINY(192, 192, 96),
         DEFAULT(384, 384, 128),
         LARGE(576, 576, 144),
-        INSANE(768, 768, 160);
+        INSANE(768, 768, 160),
+        XXL(1024, 1024, 160);
 
         public final int width;
         public final int height;
@@ -73,6 +76,9 @@ public final class LevelGenerator {
         }
         if (type == WorldType.ISLAND) {
             return NaturalLevelGenerator.generate(width, height, depth, seed, true);
+        }
+        if (type == WorldType.ARCHIPELAGO) {
+            return NaturalLevelGenerator.generate(width, height, depth, seed, NaturalLevelGenerator.Style.ARCHIPELAGO);
         }
         return new Result(FlatLevelGenerator.generate(width, height, depth), new ArrayList<>());
     }
