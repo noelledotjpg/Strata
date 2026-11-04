@@ -98,6 +98,14 @@ public final class TileRegistry {
                     .setFlowSpeed(1.0F)
                     .setWaveHeight(0.03F)
                     .setViscosity(0.6F)
+                    // what blocks look like under water, shallow to deep (the old hard coded palette of TerrainShader)
+                    .setDepthPalette(
+                            new float[]{0.38F, 0.91F, 1.00F},
+                            new float[]{0.21F, 0.72F, 0.94F},
+                            new float[]{0.10F, 0.53F, 0.82F},
+                            new float[]{0.06F, 0.36F, 0.65F},
+                            new float[]{0.04F, 0.24F, 0.47F},
+                            new float[]{0.025F, 0.13F, 0.29F})
     );
 
     public static final Tile LAVA = register(
@@ -109,7 +117,14 @@ public final class TileRegistry {
                     .setFlowSpeed(0.35F)
                     .setWaveHeight(0.012F)
                     .setViscosity(4.0F)
-                    .setLightRadius(12.0F)
+                    // 5 bands: glowing orange just under the surface, dark red deep down
+                    .setDepthPalette(
+                            new float[]{1.00F, 0.75F, 0.35F},
+                            new float[]{1.00F, 0.52F, 0.14F},
+                            new float[]{0.92F, 0.34F, 0.07F},
+                            new float[]{0.70F, 0.20F, 0.04F},
+                            new float[]{0.40F, 0.10F, 0.02F})
+                    .setLightRadius(12.0F)   // returns Tile, so it has to stay last in the chain
     );
 
     public static final Tile ACID = register(
@@ -121,6 +136,14 @@ public final class TileRegistry {
                     .setFlowSpeed(0.8F)
                     .setWaveHeight(0.02F)
                     .setViscosity(0.9F)
+                    // 6 bands: bright toxic green fading to dark
+                    .setDepthPalette(
+                            new float[]{0.75F, 1.00F, 0.45F},
+                            new float[]{0.55F, 0.95F, 0.30F},
+                            new float[]{0.40F, 0.85F, 0.20F},
+                            new float[]{0.28F, 0.68F, 0.14F},
+                            new float[]{0.18F, 0.50F, 0.10F},
+                            new float[]{0.10F, 0.32F, 0.06F})
     );
 
     public static final Tile SLUDGE = register(
@@ -132,6 +155,12 @@ public final class TileRegistry {
                     .setFlowSpeed(0.25F)
                     .setWaveHeight(0.01F)
                     .setViscosity(5.0F)
+                    // 4 bands: murky brown, gets dark quickly
+                    .setDepthPalette(
+                            new float[]{0.65F, 0.58F, 0.30F},
+                            new float[]{0.50F, 0.42F, 0.20F},
+                            new float[]{0.35F, 0.28F, 0.12F},
+                            new float[]{0.20F, 0.15F, 0.06F})
     );
 
     public static final Tile TREE_SAPLING = register(

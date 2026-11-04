@@ -36,7 +36,8 @@ class LevelLighting {
             this.x = x;
             this.y = y;
             this.z = z;
-            this.radius = radius;
+            // the scratch arrays are sized for MAX_LIGHT_RADIUS, a bigger radius would run off their end
+            this.radius = Math.min(radius, (float) Level.MAX_LIGHT_RADIUS);
         }
 
         int cubeRadius() {
@@ -54,7 +55,6 @@ class LevelLighting {
     private final int[] lightQueue    = new int[LIGHT_SCRATCH_SIZE];
 
     private float   skyAmbient = 1.0F;
-    private boolean fullBright = false;
 
     LevelLighting(Level level) {
         this.level      = level;
@@ -68,14 +68,6 @@ class LevelLighting {
 
     float getSkyAmbient() {
         return this.skyAmbient;
-    }
-
-    boolean isFullBright() {
-        return this.fullBright;
-    }
-
-    void setFullBright(boolean fullBright) {
-        this.fullBright = fullBright;
     }
 
     void calcLightDepths(int minX, int minZ, int maxX, int maxZ) {
@@ -94,9 +86,11 @@ class LevelLighting {
 
                 this.lightDepths[x + z * this.level.width] = depth;
 
-                if (prevDepth != depth) {
-                    int lo = Math.min(prevDepth, depth);
-                    int hi = Math.max(prevDepth, depth);
+                // Force notification on targeted single-column updates even if depth didn't change (underground/cave edits)
+                boolean targeted = (maxX <= 2 && maxZ <= 2);
+                if (prevDepth != depth || targeted) {
+                    int lo = prevDepth == depth ? 0 : Math.min(prevDepth, depth);
+                    int hi = prevDepth == depth ? this.level.depth - 1 : Math.max(prevDepth, depth);
                     notifyColumn(x, z, lo, hi);
 
                     if (bulk) {
@@ -277,9 +271,6 @@ class LevelLighting {
     }
 
     float getBrightness(int x, int y, int z) {
-        if (this.fullBright) {
-            return 1.0F;
-        }
         return getSkyLight(x, y, z) * this.skyAmbient;
     }
 

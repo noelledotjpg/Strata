@@ -27,6 +27,11 @@ public final class GameSettings {
     /** plain resizable window, maximized to the desktop work area, or exclusive fullscreen */
     public enum DisplayType { WINDOWED, MAXIMIZED, FULLSCREEN }
 
+    /** chunks (16 blocks) drawn around the camera, 0 = no limit */
+    public static final int UNLIMITED_RENDER_DISTANCE = 0;
+    public static final int MIN_RENDER_DISTANCE = 4;
+    public static final int MAX_RENDER_DISTANCE = 32;
+
     public static final int UNCAPPED_FPS = 0;
     private static final int[] FPS_CAP_STEPS = {30, 60, 120, 144, 240, UNCAPPED_FPS};
 
@@ -36,6 +41,7 @@ public final class GameSettings {
     private static boolean showFpsInHud = true;
     private static boolean pixelationEnabled = true;
     private static int pixelSize = DEFAULT_PIXEL_SIZE;
+    private static int renderDistance = UNLIMITED_RENDER_DISTANCE;
     private static float musicVolume = 0.15f;
     private static float sfxVolume = 0.8f;
     private static String username = DEFAULT_USERNAME;
@@ -180,6 +186,17 @@ public final class GameSettings {
         pixelSize = Math.max(MIN_PIXEL_SIZE, Math.min(MAX_PIXEL_SIZE, size));
     }
 
+    public static int getRenderDistance() {
+        return renderDistance;
+    }
+
+    /** anything below 1 means unlimited, otherwise clamped to MIN_RENDER_DISTANCE..MAX_RENDER_DISTANCE */
+    public static void setRenderDistance(int chunks) {
+        renderDistance = chunks <= 0
+                ? UNLIMITED_RENDER_DISTANCE
+                : Math.max(MIN_RENDER_DISTANCE, Math.min(MAX_RENDER_DISTANCE, chunks));
+    }
+
     public static void load() {
         File file = new File(OPTIONS_FILE_NAME);
         if (!file.isFile()) {
@@ -200,6 +217,7 @@ public final class GameSettings {
         showFpsInHud = parseBoolean(props.getProperty("showFpsInHud"), showFpsInHud);
         pixelationEnabled = parseBoolean(props.getProperty("pixelationEnabled"), pixelationEnabled);
         setPixelSize(parseInt(props.getProperty("pixelSize"), pixelSize));
+        setRenderDistance(parseInt(props.getProperty("renderDistance"), renderDistance));
         setMusicVolume(parseFloat(props.getProperty("musicVolume"), musicVolume));
         setSfxVolume(parseFloat(props.getProperty("sfxVolume"), sfxVolume));
 
@@ -230,6 +248,7 @@ public final class GameSettings {
         props.setProperty("showFpsInHud", Boolean.toString(showFpsInHud));
         props.setProperty("pixelationEnabled", Boolean.toString(pixelationEnabled));
         props.setProperty("pixelSize", Integer.toString(pixelSize));
+        props.setProperty("renderDistance", Integer.toString(renderDistance));
         props.setProperty("musicVolume", Float.toString(musicVolume));
         props.setProperty("sfxVolume", Float.toString(sfxVolume));
         props.setProperty("username", username);

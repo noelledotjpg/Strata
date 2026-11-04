@@ -74,8 +74,18 @@ public class Chunk {
 
     private boolean priority = false;
 
+    // Fade-in tracking for dither shader
+    private long fadeStartNanos = 0;
+    private static final long FADE_DURATION_NANOS = 400_000_000L; // 0.4 seconds
+
     // whether the liquid list has anything in it, so chunks without liquid cost nothing in that pass
     private boolean hasLiquid = false;
+
+    // per layer: whether its display list has any geometry. an empty layer is never called, most chunks of a big world are air or buried
+    private final boolean[] layerHasGeometry = new boolean[LAYERS];
+
+    // bumped by every setDirty. a build remembers the value it started from, so a result that finishes after the chunk was changed again is recognised as out of date
+    private volatile int version = 0;
 
     private final List<int[]> billboardPositions = new ArrayList<>();
 
@@ -103,20 +113,26 @@ public class Chunk {
         this.lists = glGenLists(LAYERS);
 
         this.boundingBox = new AABB(minX, minY, minZ, maxX, maxY, maxZ);
-
     }
 
-    public void rebuild(int layer) {
-        if (rebuiltThisFrame >= LAYERS && !this.priority) {
+    // chunks rebuilt (all layers together) per LevelRenderer.render pass, urgent (priority) chunks ignore it
+    private static final int MAX_REBUILDS_PER_PASS = 1;
+
+    /**
+     * rebuilds every layer of the chunk in one go, if the frame's budget allows it (or the chunk is urgent).
+     * the layers must never be rebuilt separately: the "lit" and "shadowed" lists are split from the same light values,
+     * so a chunk with one new and one stale list shows blocks lit that should be shadowed, until the next block update nearby
+     */
+    private void rebuildIfAllowed() {
+        if (rebuiltThisFrame >= MAX_REBUILDS_PER_PASS && !this.priority) {
             return;
         }
 
         updates++;
         rebuiltThisFrame++;
 
-        this.dirty = false;
-
-        buildList(layer);
+        rebuildNow();
+        this.priority = this.dirty;
     }
 
     void rebuildNow() {
@@ -130,6 +146,7 @@ public class Chunk {
      */
     public static final class Built {
         private final Chunk chunk;
+        private final int version;   // the chunk's version when this build started
         private final List<Tessellator.Mesh>[] meshes;
         private final boolean[] empty;
         private List<int[]> billboards = new ArrayList<>();
@@ -138,6 +155,7 @@ public class Chunk {
         @SuppressWarnings("unchecked")
         private Built(Chunk chunk) {
             this.chunk = chunk;
+            this.version = chunk.version;
             this.meshes = new List[LAYERS];
             this.empty = new boolean[LAYERS];
         }
@@ -177,10 +195,44 @@ public class Chunk {
             }
             glEndList();
         }
+        for (int layer = 0; layer < LAYERS; layer++) {
+            this.layerHasGeometry[layer] = hasMeshes(built, layer);
+        }
         this.billboardPositions.clear();
         this.billboardPositions.addAll(built.billboards);
         this.hasLiquid = built.liquidFound;
-        this.dirty = false;
+
+        // Mark fade-in start time upon successful upload
+        this.fadeStartNanos = System.nanoTime();
+
+        // changed while this was being built on a worker? then it is already out of date: stay dirty so it is built again,
+        // otherwise the stale mesh (wrong light on some blocks) would stay until the next block update nearby
+        this.dirty = built.version != this.version;
+    }
+
+    public float getFadeProgress() {
+        if (this.fadeStartNanos == 0) {
+            return 1.0F;
+        }
+        long elapsed = System.nanoTime() - this.fadeStartNanos;
+        if (elapsed >= FADE_DURATION_NANOS) {
+            return 1.0F;
+        }
+        return (float) elapsed / (float) FADE_DURATION_NANOS;
+    }
+
+    private static boolean hasMeshes(Built built, int layer) {
+        return !built.empty[layer] && built.meshes[layer] != null && !built.meshes[layer].isEmpty();
+    }
+
+    /** whether any layer has something to draw. a dirty chunk hasn't been built yet, so this says nothing about it */
+    public boolean hasGeometry() {
+        for (boolean has : this.layerHasGeometry) {
+            if (has) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public boolean isDirty() {
@@ -191,16 +243,10 @@ public class Chunk {
         return this.hasLiquid;
     }
 
-    /**
-     * true if nothing in this chunk can be seen: it is all air, or it is buried in plain opaque blocks (a chunk deep in the rock).
-     * most chunks of a big world are one of those, and skipping their cell-by-cell mesh pass is what makes loading fast.
-     * only called for chunks that really are empty or buried, anything else (liquid, sub-tiles, odd shaped tiles, the level's edge) gets the normal pass
-     */
     private boolean drawsNothing() {
         boolean checkSubTiles = !this.level.getSubTiles().isEmpty();
         LiquidLayer liquids = this.level.getLiquids();
 
-        // all air, no liquid, no sub-tiles
         boolean allAir = true;
         scan:
         for (int y = this.minY; y < this.maxY; y++) {
@@ -218,14 +264,12 @@ public class Chunk {
             return true;
         }
 
-        // buried: this chunk and the layer of cells around it are all plain opaque cubes, so no face of this chunk is exposed.
-        // chunks on the edge of the level are always built, their outer faces can be seen from outside
         if (this.minX == 0 || this.minY == 0 || this.minZ == 0
                 || this.maxX >= this.level.width || this.maxY >= this.level.depth || this.maxZ >= this.level.height
                 || !this.level.getSubTiles().isEmpty()) {
             return false;
         }
-        byte[] opaque = new byte[256];       // per tile id: 0 = not looked at yet, 1 = plain opaque cube, 2 = anything else
+        byte[] opaque = new byte[256];
         for (int y = this.minY - 1; y <= this.maxY; y++) {
             for (int z = this.minZ - 1; z <= this.maxZ; z++) {
                 for (int x = this.minX - 1; x <= this.maxX; x++) {
@@ -245,40 +289,6 @@ public class Chunk {
         return true;
     }
 
-    private void buildList(int layer) {
-        // single layer rebuild, same two steps as a full build
-        Built built = new Built(this);
-        boolean nothing = drawsNothing();
-        if (nothing) {
-            built.empty[layer] = true;
-        } else {
-            computeLayer(built, layer, TESSELLATOR);
-        }
-
-        glNewList(this.lists + layer, GL_COMPILE);
-        if (!built.empty[layer]) {
-            if (layer != LAYER_LIQUID) {
-                glEnable(GL_TEXTURE_2D);
-                Textures.bind(TEXTURE);
-            }
-            for (Tessellator.Mesh mesh : built.meshes[layer]) {
-                Tessellator.draw(mesh);
-            }
-            if (layer != LAYER_LIQUID) {
-                glDisable(GL_TEXTURE_2D);
-            }
-        }
-        glEndList();
-
-        if (layer == 0) {
-            this.billboardPositions.clear();
-            this.billboardPositions.addAll(built.billboards);
-        }
-        if (layer == LAYER_LIQUID) {
-            this.hasLiquid = built.liquidFound;
-        }
-    }
-
     private void computeLayer(Built built, int layer, Tessellator tessellator) {
         boolean liquidLayer = layer == LAYER_LIQUID;
 
@@ -291,8 +301,6 @@ public class Chunk {
                     int blockId = this.level.getTile(x, y, z);
 
                     if (liquidLayer) {
-                        // this list only holds liquids (from the level's liquid layer, so a block may share the cell),
-                        // everything else (sub-tiles included) belongs to layers 0 and 1
                         LiquidTile liquid = this.level.getLiquids().get(x, y, z);
                         if (liquid != null) {
                             liquid.renderLiquid(tessellator, this.level, x, y, z);
@@ -304,7 +312,7 @@ public class Chunk {
                     if (blockId != 0) {
                         Tile tile = Tile.byId(blockId);
                         if (tile instanceof LiquidTile) {
-                            tile = null;   // liquids live in the liquid layer, never draw one as a block
+                            tile = null;
                         }
                         if (tile != null) {
                             if (tile.isBillboard()) {
@@ -318,7 +326,6 @@ public class Chunk {
                         }
                     }
 
-                    // Tiles sharing this cell with its normal tile, each drawn shifted by its own offset.
                     for (SubTile subTile : this.level.getSubTiles().at(x, y, z)) {
                         Tile shared = Tile.byId(subTile.tileId);
                         if (shared == null || shared.isBillboard()) {
@@ -327,7 +334,6 @@ public class Chunk {
                         tessellator.setOffset(subTile.ox, subTile.oy, subTile.oz);
                         int clip = SubTile.clipOf(subTile.data);
                         if (clip != 0) {
-                            // A block sharing the cell with a slab: only its lower or upper half is drawn.
                             float lo = clip == SubTile.CLIP_BOTTOM ? y : y + 0.5F;
                             tessellator.setClipY(y, y + 1.0F, lo + subTile.oy, lo + 0.5F + subTile.oy);
                         }
@@ -346,23 +352,23 @@ public class Chunk {
 
     public void render(int layer) {
         if (this.dirty) {
-            rebuild(0);
-            rebuild(1);
-            rebuild(LAYER_LIQUID);
-            if (!this.dirty) {
-                this.priority = false;
-            }
+            rebuildIfAllowed();
         }
 
+        if (!this.layerHasGeometry[layer]) {
+            return;
+        }
         glCallList(this.lists + layer);
     }
 
     public void setDirty() {
         this.dirty = true;
+        this.version++;
     }
 
     public void setDirtyNow() {
         this.dirty = true;
+        this.version++;
         this.priority = true;
     }
 

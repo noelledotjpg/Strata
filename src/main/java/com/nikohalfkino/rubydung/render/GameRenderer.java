@@ -1,5 +1,6 @@
 package com.nikohalfkino.rubydung.render;
 
+import com.nikohalfkino.rubydung.level.Chunk;
 import com.nikohalfkino.rubydung.level.DayNightCycle;
 import com.nikohalfkino.rubydung.player.HitResult;
 import com.nikohalfkino.rubydung.RubyDung;
@@ -182,13 +183,12 @@ public class GameRenderer {
             this.skyboxRenderer.render(eyeX, eyeY, eyeZ, cycle);
             this.cloudRenderer.render(eyeX, eyeY, eyeZ, cycle);
 
-            glEnable(GL_FOG);
-            glFogi(GL_FOG_MODE, GL_LINEAR);
-            glFogf(GL_FOG_START, FOG_START);
-            glFogf(GL_FOG_END, FOG_END);
-            glFog(GL_FOG_COLOR, this.fogColor);
+            // Distance fog at the edge of the render distance (the terrain and liquid shaders apply it themselves,
+            // the fixed function fog is only switched on for the billboards).
+            Fog.update(GameSettings.getRenderDistance() * (float) Chunk.SIZE, fc, eyeX, eyeZ);
             glDisable(GL_FOG);
 
+            levelRenderer.setViewPosition(eyeX, eyeY, eyeZ);
             levelRenderer.render(0);
 
             glEnable(GL_TEXTURE_2D);

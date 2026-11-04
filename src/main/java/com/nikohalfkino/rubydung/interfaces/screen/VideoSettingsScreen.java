@@ -43,6 +43,11 @@ public class VideoSettingsScreen extends MenuScreen {
     private static final int PIXEL_MIN = 2;
     private static final int PIXEL_MAX = 12;
 
+    // render distance slider: RENDER_MIN..RENDER_MAX chunks of 16 blocks, "Unlimited" at the end
+    private static final int RENDER_MIN = GameSettings.MIN_RENDER_DISTANCE;
+    private static final int RENDER_MAX = GameSettings.MAX_RENDER_DISTANCE;
+    private static final int RENDER_UNLIMITED_AT = RENDER_MAX + 1;
+
     private Toggle vsyncToggle;
     private Toggle pixelationToggle;
 
@@ -124,11 +129,7 @@ public class VideoSettingsScreen extends MenuScreen {
                 .onChange(v -> GameSettings.setFpsCap(snapFps(v)))
                 .onCommit(GameSettings::save);
         fpsCap.setEnabledWhen(() -> !this.vsyncToggle.getValue());
-        col.add(fpsCap, ITEM_GAP);
-
-        // Empty (not hidden) while VSync is off so the layout doesn't jump.
-        col.add(new Label(() -> this.vsyncToggle.getValue() ? "FPS cap is ignored while VSync is on." : "")
-                .setColor(UiStyle.TEXT_DIM));
+        col.add(fpsCap);
 
         return col;
     }
@@ -174,7 +175,18 @@ public class VideoSettingsScreen extends MenuScreen {
                 .onChange(v -> GameSettings.setPixelSize(snapPixelSize(v)))
                 .onCommit(GameSettings::save);
         pixelSize.setEnabledWhen(() -> this.pixelationToggle.getValue());
-        col.add(pixelSize, SECTION_GAP);
+        col.add(pixelSize, ITEM_GAP);
+
+        // chunks further than this aren't drawn, a big help on weak devices in Large / XL worlds
+        Slider renderDistance = new Slider("Render Distance", COLUMN_WIDTH, UiStyle.ROW_HEIGHT,
+                RENDER_MIN, RENDER_UNLIMITED_AT, initialRenderSlider(), true)
+                .setFormatter(v -> {
+                    int chunks = snapRenderDistance(v);
+                    return chunks == 0 ? "Unlimited" : chunks + " chunks";
+                })
+                .onChange(v -> GameSettings.setRenderDistance(snapRenderDistance(v)))
+                .onCommit(GameSettings::save);
+        col.add(renderDistance, SECTION_GAP);
 
         // overlay
         col.add(new Label("Overlay").setColor(UiStyle.TEXT_DIM), HEADER_GAP);
@@ -213,6 +225,20 @@ public class VideoSettingsScreen extends MenuScreen {
 
     private static float initialPixelSlider() {
         return Math.max(PIXEL_MIN, Math.min(PIXEL_MAX, GameSettings.getPixelSize()));
+    }
+
+    // slider position -> render distance in chunks, top of the track = no limit (0)
+    private static int snapRenderDistance(float value) {
+        int snapped = Math.round(value);
+        return snapped >= RENDER_UNLIMITED_AT ? 0 : Math.max(RENDER_MIN, snapped);
+    }
+
+    private static float initialRenderSlider() {
+        int chunks = GameSettings.getRenderDistance();
+        if (chunks <= 0) {
+            return RENDER_UNLIMITED_AT;
+        }
+        return Math.max(RENDER_MIN, Math.min(RENDER_MAX, chunks));
     }
 
     private static String typeName(DisplayType type) {

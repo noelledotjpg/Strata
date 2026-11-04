@@ -69,21 +69,53 @@ public class Player {
                 feetY + height, z + width);
     }
 
+    // random columns tried for a dry spawn before giving up and taking the first one
+    private static final int SPAWN_TRIES = 256;
+
     private void resetPosition() {
-        float x = (float) Math.random() * this.level.width;
-        float z = (float) Math.random() * this.level.height;
-        float y = findSpawnHeight((int) x, (int) z);
+        int bestX = 0, bestZ = 0, bestGround = -1;
 
-        setPosition(x, y, z);
-    }
+        for (int i = 0; i < SPAWN_TRIES; i++) {
+            int x = (int) (Math.random() * this.level.width);
+            int z = (int) (Math.random() * this.level.height);
+            int ground = findGround(x, z);
 
-    private float findSpawnHeight(int x, int z) {
-        int groundY = this.level.depth - 1;
-        while (groundY > 0 && !this.level.isSolidTile(x, groundY, z)) {
-            groundY--;
+            if (i == 0) {
+                bestX = x;
+                bestZ = z;
+                bestGround = ground;   // fallback if nothing dry turns up
+            }
+            if (ground >= 0 && isDry(x, ground, z)) {
+                bestX = x;
+                bestZ = z;
+                bestGround = ground;
+                break;
+            }
         }
 
-        return groundY + 1 + (float) EYE_HEIGHT + 0.4f;
+        float y = (bestGround < 0 ? 0 : bestGround) + 1 + (float) EYE_HEIGHT + 0.4f;
+        setPosition(bestX + 0.5F, y, bestZ + 0.5F);
+    }
+
+    /** y of the highest solid cell in the column, -1 if there is none */
+    private int findGround(int x, int z) {
+        for (int y = this.level.depth - 1; y > 0; y--) {
+            if (this.level.isSolidTile(x, y, z)) {
+                return y;
+            }
+        }
+        return this.level.isSolidTile(x, 0, z) ? 0 : -1;
+    }
+
+    // liquids live in their own layer, so isSolidTile knows nothing about them: a column under the sea has a solid
+    // sea floor and would otherwise be a fine spawn. The ground cell and the three cells of the body above it must be dry.
+    private boolean isDry(int x, int groundY, int z) {
+        for (int y = groundY; y <= groundY + 3 && y < this.level.depth; y++) {
+            if (this.level.getLiquids().has(x, y, z)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     public void setPositionAndRotation(double x, double y, double z, float yRotation, float xRotation) {

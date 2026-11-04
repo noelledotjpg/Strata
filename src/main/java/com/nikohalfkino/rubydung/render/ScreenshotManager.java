@@ -203,6 +203,8 @@ public class ScreenshotManager {
             glEnable(GL_FOG);
             levelRenderer.render(1);
 
+            levelRenderer.renderLiquids();
+
             levelRenderer.renderBillboards(camera.yaw(), camera.pitch());
 
             glDisable(GL_TEXTURE_2D);

@@ -101,6 +101,23 @@ public class LiquidTile extends WrappedTile {
     private float flowSpeed = 1.0F;
     private float waveHeight = 0.03F;
 
+    public static final int MAX_DEPTH_BANDS = 8;
+
+    // what blocks look like under this liquid, 1..MAX_DEPTH_BANDS rgb bands from shallow to deep; null = derived from the liquid's colour
+    private float[][] depthPalette;
+
+    public LiquidTile setDepthPalette(float[]... bands) {
+        if (bands.length < 1 || bands.length > MAX_DEPTH_BANDS) {
+            throw new IllegalArgumentException("need 1.." + MAX_DEPTH_BANDS + " bands");
+        }
+        this.depthPalette = bands;
+        return this;
+    }
+
+    public float[][] getDepthPalette() {
+        return this.depthPalette;
+    }
+
     /** when false the foam-wave animation is suppressed (rim/lip still drawn) */
     private boolean hasFoam = true;
 

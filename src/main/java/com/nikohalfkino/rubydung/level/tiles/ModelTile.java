@@ -136,7 +136,7 @@ public class ModelTile extends Tile {
     public void render(Tessellator tessellator, Level level, int layer, int x, int y, int z,
                        int totalAtlasSlots, int direction) {
         boolean smooth     = level.hasLightSources();
-        boolean fullBright = level.isFullBright(); // tile icons: plain shade, drawn without the shader
+        boolean fullBright = tessellator.isIconFullBright(); // tile icons: plain shade, drawn without the shader
         boolean emissive   = emitsLight();
         float[] block      = new float[4];
 
@@ -168,7 +168,7 @@ public class ModelTile extends Tile {
                 int[] side = FACE_NORMALS[cullFace];
                 int nx = x + side[0], ny = y + side[1], nz = z + side[2];
                 boolean selfCull = cullsSelfFace(quad.modelCullFace);
-                if (selfCull && iconTouchesSelf(cullFace)) {
+                if (selfCull && tessellator.iconTouchesSelf(cullFace)) {
                     continue;   // an icon: a self-culled face that would touch the same tile
                 }
                 boolean visible;

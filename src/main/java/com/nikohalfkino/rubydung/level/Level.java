@@ -83,14 +83,6 @@ public class Level {
         return this.lighting.getSkyAmbient();
     }
 
-    public boolean isFullBright() {
-        return this.lighting.isFullBright();
-    }
-
-    public void setFullBright(boolean fullBright) {
-        this.lighting.setFullBright(fullBright);
-    }
-
     public void setPlayerFlightState(boolean flying, boolean noClip, float flySpeedMultiplier) {
         this.savedFlying = flying;
         this.savedNoClip = noClip;

@@ -53,6 +53,9 @@ public final class LiquidShader {
     private static int foamLocation = -1;
     private static int motionLocation = -1;
     private static int sheetLocation = -1;
+    private static int fogParamsLocation = -1;
+    private static int fogColorLocation = -1;
+    private static int fogEyeLocation = -1;
 
     private static final FloatBuffer COLORS = BufferUtils.createFloatBuffer(LiquidTile.MAX_LIQUIDS * 4);
     private static final FloatBuffer FOAMS = BufferUtils.createFloatBuffer(LiquidTile.MAX_LIQUIDS * 4);
@@ -69,6 +72,7 @@ public final class LiquidShader {
         GL20.glUseProgram(program);
         GL20.glUniform1f(timeLocation, (System.nanoTime() - START) * 1.0E-9F);
         GL20.glUniform1f(ambientLocation, ambient);
+        Fog.upload(fogParamsLocation, fogColorLocation, fogEyeLocation);
         uploadLiquids();
         bindTextures();
     }
@@ -154,6 +158,9 @@ public final class LiquidShader {
         foamLocation = GL20.glGetUniformLocation(p, "liqFoam");
         motionLocation = GL20.glGetUniformLocation(p, "liqMotion");
         sheetLocation = GL20.glGetUniformLocation(p, "liqSheet");
+        fogParamsLocation = GL20.glGetUniformLocation(p, "uFogParams");
+        fogColorLocation = GL20.glGetUniformLocation(p, "uFogColor");
+        fogEyeLocation = GL20.glGetUniformLocation(p, "uFogEye");
 
         GL20.glUseProgram(p);
         for (int i = 0; i < LiquidTile.MAX_LIQUIDS; i++) {
@@ -204,7 +211,7 @@ public final class LiquidShader {
     }
 
     private static int compile(int type, String resource) {
-        String source = prepare(readResource(resource));
+        String source = addFog(prepare(readResource(resource)), type == GL20.GL_FRAGMENT_SHADER);
 
         int shader = GL20.glCreateShader(type);
         GL20.glShaderSource(shader, source);
@@ -222,14 +229,44 @@ public final class LiquidShader {
         int newline = source.indexOf('\n');
         String version = newline < 0 ? source : source.substring(0, newline);
         String rest = newline < 0 ? "" : source.substring(newline + 1);
-        // only the marker line itself is replaced (first match), never a mention of it in a comment
-        // (the vertex shader has no marker line, only the fragment shader gets samplers)
         int marker = rest.indexOf("\n" + SAMPLERS_MARKER);
         int from = marker >= 0 ? marker + 1 : rest.startsWith(SAMPLERS_MARKER) ? 0 : -1;
         if (from >= 0) {
             rest = rest.substring(0, from) + buildSamplers() + rest.substring(from + SAMPLERS_MARKER.length());
         }
         return version + "\n#define MAX_LIQUIDS " + LiquidTile.MAX_LIQUIDS + "\n" + rest;
+    }
+
+    private static final java.util.regex.Pattern MAIN = java.util.regex.Pattern.compile("void\\s+main\\s*\\(\\s*(void)?\\s*\\)");
+
+    /**
+     * adds distance fog and dither fading without touching the shader files: the original main() is renamed and called from a new one.
+     */
+    private static String addFog(String source, boolean fragment) {
+        java.util.regex.Matcher m = MAIN.matcher(source);
+        if (!m.find()) {
+            System.err.println("[LiquidShader] no main() found, liquids are drawn without fog/dither");
+            return source;
+        }
+        String renamed = source.substring(0, m.start()) + "void liquidMain()" + source.substring(m.end());
+        String declarations = fragment ? (Fog.GLSL_FRAGMENT_DECLARATIONS + Fog.GLSL_DITHER_DECLARATIONS) : Fog.GLSL_VERTEX_DECLARATIONS;
+        String main = fragment
+                ? "\nvoid main() {\n    applyDither();\n    liquidMain();\n    gl_FragColor.rgb = applyFog(gl_FragColor.rgb);\n}\n"
+                : "\nvoid main() {\n    liquidMain();\n    vFogWorldXZ = gl_Vertex.xz;\n}\n";
+
+        int afterHeader = 0;
+        for (int i = 0; i < 2; i++) {
+            int newline = renamed.indexOf('\n', afterHeader);
+            if (newline < 0) {
+                break;
+            }
+            String line = renamed.substring(afterHeader, newline).trim();
+            if (!line.startsWith("#version") && !line.startsWith("#define")) {
+                break;
+            }
+            afterHeader = newline + 1;
+        }
+        return renamed.substring(0, afterHeader) + declarations + renamed.substring(afterHeader) + main;
     }
 
     private static String buildSamplers() {

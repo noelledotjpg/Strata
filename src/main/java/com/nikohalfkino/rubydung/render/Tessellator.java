@@ -32,6 +32,11 @@ public class Tessellator {
     private final float[][] clipCol = new float[4][4];
     private int clipCount = 0;
 
+    // icon mode (TileIconRenderer): set on the icon renderer's own tessellator only. Living here instead of in shared
+    // state means the chunk workers, which each own their tessellator, can never see it
+    private boolean iconFullBright = false;
+    private int iconSelfFaces = 0;
+
     private boolean hasTexture = false;
     private float textureU;
     private float textureV;
@@ -137,6 +142,20 @@ public class Tessellator {
         float[] uvs = this.hasTexture ? copyOut(this.textureCoordinateBuffer, this.vertices * 2) : null;
         float[] colors = this.hasColor ? copyOut(this.colorBuffer, this.vertices * 4) : null;
         this.capture.add(new Mesh(this.primitive, this.vertices, positions, uvs, colors));
+    }
+
+    /** fullBright: tiles are drawn with plain face shade, no sky or block light. selfFaceMask: world faces (bit per Tile.FACE_*) the icon treats as touching the same tile, so self-cull faces there are skipped */
+    public void setIconMode(boolean fullBright, int selfFaceMask) {
+        this.iconFullBright = fullBright;
+        this.iconSelfFaces = selfFaceMask;
+    }
+
+    public boolean isIconFullBright() {
+        return this.iconFullBright;
+    }
+
+    public boolean iconTouchesSelf(int worldFace) {
+        return (this.iconSelfFaces & (1 << worldFace)) != 0;
     }
 
     public void init() {
@@ -374,9 +393,11 @@ public class Tessellator {
             return;
         }
 
-        this.vertexBuffer.flip();
-        this.textureCoordinateBuffer.flip();
-        this.colorBuffer.flip();
+        // vertices are written with absolute puts, so the position stays 0 and flip() would set the limit to 0:
+        // keep the buffers at position 0 / full limit, which is all the pointer calls look at
+        this.vertexBuffer.clear();
+        this.textureCoordinateBuffer.clear();
+        this.colorBuffer.clear();
 
         glEnableClientState(GL_VERTEX_ARRAY);
         glVertexPointer(3, 0, this.vertexBuffer);

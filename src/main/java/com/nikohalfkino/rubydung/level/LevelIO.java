@@ -2,6 +2,8 @@ package com.nikohalfkino.rubydung.level;
 
 import com.nikohalfkino.rubydung.level.generation.LevelGenerator;
 
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.EOFException;
@@ -9,6 +11,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.zip.GZIPInputStream;
@@ -91,7 +94,7 @@ public final class LevelIO {
     public static SavedPosition load(File file, byte[] blocks, byte[] data) {
         SavedPosition position = SavedPosition.none();
 
-        try (DataInputStream dis = new DataInputStream(new GZIPInputStream(new FileInputStream(file)))) {
+        try (DataInputStream dis = new DataInputStream(new BufferedInputStream(new GZIPInputStream(new FileInputStream(file), 1 << 16), 1 << 16))) {
             dis.readFully(blocks);
 
             try {
@@ -147,7 +150,7 @@ public final class LevelIO {
         // Write to a temp file and move it into place, so a crash mid-write can't corrupt the world.
         File temp = new File(file.getPath() + ".tmp");
 
-        try (DataOutputStream dos = new DataOutputStream(new GZIPOutputStream(new FileOutputStream(temp)))) {
+        try (DataOutputStream dos = new DataOutputStream(new BufferedOutputStream(new GZIPOutputStream(new FileOutputStream(temp), 1 << 16), 1 << 16))) {
             dos.write(blocks);
 
             dos.writeBoolean(position.present);
@@ -180,13 +183,19 @@ public final class LevelIO {
             }
         } catch (Exception e) {
             e.printStackTrace();
+            temp.delete();   // don't leave a half written file behind
             return;
         }
 
         try {
-            Files.move(temp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            try {
+                Files.move(temp.toPath(), file.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(temp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            }
         } catch (IOException e) {
             e.printStackTrace();
+            temp.delete();
         }
     }
 }

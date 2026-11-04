@@ -5,11 +5,8 @@ import com.nikohalfkino.rubydung.level.tiles.BillboardTile;
 import com.nikohalfkino.rubydung.level.tiles.LiquidTile;
 import com.nikohalfkino.rubydung.level.tiles.Tile;
 import com.nikohalfkino.rubydung.phys.AABB;
-import com.nikohalfkino.rubydung.render.Frustum;
-import com.nikohalfkino.rubydung.render.LiquidShader;
-import com.nikohalfkino.rubydung.render.Tessellator;
-import com.nikohalfkino.rubydung.render.TerrainShader;
-import com.nikohalfkino.rubydung.render.Textures;
+import com.nikohalfkino.rubydung.render.*;
+import com.nikohalfkino.rubydung.util.GameSettings;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -38,9 +35,10 @@ public class LevelRenderer implements LevelListener {
         this.tessellator = new Tessellator();
         this.level = level;
 
-        this.chunkAmountX = level.width / CHUNK_SIZE;
-        this.chunkAmountY = level.depth / CHUNK_SIZE;
-        this.chunkAmountZ = level.height / CHUNK_SIZE;
+        // rounded up, so a world whose size isn't a multiple of CHUNK_SIZE still has a (smaller) chunk on its edge
+        this.chunkAmountX = (level.width + CHUNK_SIZE - 1) / CHUNK_SIZE;
+        this.chunkAmountY = (level.depth + CHUNK_SIZE - 1) / CHUNK_SIZE;
+        this.chunkAmountZ = (level.height + CHUNK_SIZE - 1) / CHUNK_SIZE;
 
         this.chunks = new Chunk[this.chunkAmountX * this.chunkAmountY * this.chunkAmountZ];
 
@@ -65,42 +63,69 @@ public class LevelRenderer implements LevelListener {
             }
         }
 
-        // After the chunks exist: creating the first Chunk builds the texture atlas, and billboard
-        // sprite sizes come from the atlas textures.
         this.maxBillboardSize = findMaxBillboardSize();
+    }
+
+    private double viewX = Double.NaN;
+    private double viewZ = Double.NaN;
+
+    public void setViewPosition(double x, double y, double z) {
+        this.viewX = x;
+        this.viewZ = z;
+    }
+
+    private final List<Chunk> visibleChunks = new ArrayList<>();
+    private boolean visibleChunksValid = false;
+
+    private boolean withinRenderDistance(AABB box, double extra) {
+        int distance = GameSettings.getRenderDistance();
+        if (distance <= 0 || Double.isNaN(this.viewX)) {
+            return true;
+        }
+        double reach = distance * (double) CHUNK_SIZE + extra;
+        double dx = Math.max(Math.max(box.minX - this.viewX, this.viewX - box.maxX), 0.0);
+        double dz = Math.max(Math.max(box.minZ - this.viewZ, this.viewZ - box.maxZ), 0.0);
+        return dx * dx + dz * dz <= reach * reach;
+    }
+
+    private void collectVisibleChunks() {
+        Frustum frustum = Frustum.getFrustum();
+        this.visibleChunks.clear();
+        for (Chunk chunk : this.chunks) {
+            if (!chunk.isDirty() && !chunk.hasGeometry()) {
+                continue;
+            }
+            if (withinRenderDistance(chunk.boundingBox, 0.0) && frustum.cubeInFrustum(chunk.boundingBox)) {
+                this.visibleChunks.add(chunk);
+            }
+        }
+        this.visibleChunksValid = true;
     }
 
     public void render(int layer) {
         Textures.enableAlphaTest();
 
-        Frustum frustum = Frustum.getFrustum();
-
         Chunk.rebuiltThisFrame = 0;
 
-        // Time of day is applied here, at draw time, so chunk meshes never go stale when it changes.
+        if (layer == 0 || !this.visibleChunksValid) {
+            collectVisibleChunks();
+        }
+
         TerrainShader.bind(this.level.getSkyAmbient());
         try {
-            for (Chunk chunk : this.chunks) {
-                if (frustum.cubeInFrustum(chunk.boundingBox)) {
-                    chunk.render(layer);
-                }
+            for (int i = 0; i < this.visibleChunks.size(); i++) {
+                Chunk chunk = this.visibleChunks.get(i);
+                chunk.render(layer);
             }
         } finally {
             TerrainShader.unbind();
         }
     }
 
-    /**
-     * draws the liquids of every visible chunk, after the opaque terrain (and before the billboards)
-     *
-     * blended and double sided (you see the surface from below too). liquid faces are translucent and come in no
-     * particular order, so it is done in two passes: first only the depth of all liquid faces, then the colour
-     * where a face is the nearest one. every pixel is blended exactly once, with the surface you actually see,
-     * whatever the draw order was (no faces vanishing behind others, no darker double layers).
-     * state is put back as it was found
-     */
     public void renderLiquids() {
-        Frustum frustum = Frustum.getFrustum();
+        if (!this.visibleChunksValid) {
+            collectVisibleChunks();
+        }
 
         boolean blend = glIsEnabled(GL_BLEND);
         boolean alphaTest = glIsEnabled(GL_ALPHA_TEST);
@@ -115,16 +140,14 @@ public class LevelRenderer implements LevelListener {
 
         LiquidShader.bind(this.level.getSkyAmbient());
         try {
-            // pass 1: depth only
             glDepthMask(true);
             glColorMask(false, false, false, false);
-            drawLiquidChunks(frustum);
+            drawLiquidChunks();
 
-            // pass 2: colour, only where a liquid face is the nearest one
             glColorMask(true, true, true, true);
             glDepthMask(false);
             glDepthFunc(GL_LEQUAL);
-            drawLiquidChunks(frustum);
+            drawLiquidChunks();
         } finally {
             glColorMask(true, true, true, true);
             glDepthFunc(depthFunc);
@@ -142,9 +165,10 @@ public class LevelRenderer implements LevelListener {
         }
     }
 
-    private void drawLiquidChunks(Frustum frustum) {
-        for (Chunk chunk : this.chunks) {
-            if (chunk.hasLiquid() && frustum.cubeInFrustum(chunk.boundingBox)) {
+    private void drawLiquidChunks() {
+        for (int i = 0; i < this.visibleChunks.size(); i++) {
+            Chunk chunk = this.visibleChunks.get(i);
+            if (chunk.hasLiquid()) {
                 chunk.render(Chunk.LAYER_LIQUID);
             }
         }
@@ -152,7 +176,6 @@ public class LevelRenderer implements LevelListener {
 
     private int buildCursor = 0;
 
-    // single threaded build, still used when nothing started the parallel one
     public boolean buildNextChunks(int maxChunks) {
         if (this.parallel) {
             return uploadBuiltChunks(maxChunks, Long.MAX_VALUE);
@@ -168,14 +191,11 @@ public class LevelRenderer implements LevelListener {
         return this.buildCursor < this.chunks.length;
     }
 
-    // ---- parallel initial build ----
-    // workers make the vertex data (no GL involved), the GL thread only compiles the display lists from it
-
-    private static final int MAX_FINISHED_WAITING = 256;   // caps how many finished meshes wait for the GL thread (memory)
+    private static final int MAX_FINISHED_WAITING = 256;
 
     private static final class Result {
         final Chunk chunk;
-        final Chunk.Built built;   // null if the worker failed, the GL thread then builds it itself
+        final Chunk.Built built;
 
         Result(Chunk chunk, Chunk.Built built) {
             this.chunk = chunk;
@@ -185,16 +205,14 @@ public class LevelRenderer implements LevelListener {
 
     private boolean parallel = false;
     private volatile boolean cancelled = false;
-    private int[] pending;                     // indices of the chunks that need building
+    // bumped by every startParallelBuild: workers of an earlier build notice it and stop instead of carrying on into the new one
+    private volatile int buildGeneration = 0;
+    private int[] pending;
     private int uploaded = 0;
     private final AtomicInteger claimed = new AtomicInteger();
     private final Semaphore waitingSlots = new Semaphore(MAX_FINISHED_WAITING);
     private final ConcurrentLinkedQueue<Result> finished = new ConcurrentLinkedQueue<>();
 
-    /**
-     * starts building every dirty chunk on worker threads. keep calling {@link #uploadBuiltChunks} on the GL thread until it returns false.
-     * the level must not change until then
-     */
     public void startParallelBuild() {
         int count = 0;
         int[] list = new int[this.chunks.length];
@@ -206,22 +224,32 @@ public class LevelRenderer implements LevelListener {
         this.pending = java.util.Arrays.copyOf(list, count);
         this.uploaded = 0;
         this.claimed.set(0);
+        this.finished.clear();
+        this.waitingSlots.drainPermits();
+        this.waitingSlots.release(MAX_FINISHED_WAITING);
+        int generation = ++this.buildGeneration;
         this.cancelled = false;
         this.parallel = true;
 
-        int threads = Math.max(1, Runtime.getRuntime().availableProcessors() - 1);
+        // leave a core for the render thread (and one more for the OS / GC), otherwise frames stall while chunks build
+        int threads = Math.max(1, Runtime.getRuntime().availableProcessors() - 2);
         for (int t = 0; t < threads; t++) {
-            Thread worker = new Thread(this::buildWorker, "chunk-build-" + t);
+            Thread worker = new Thread(() -> buildWorker(generation), "chunk-build-" + t);
             worker.setDaemon(true);
+            worker.setPriority(Thread.MIN_PRIORITY);
             worker.start();
         }
     }
 
-    private void buildWorker() {
-        Tessellator tessellator = new Tessellator();   // each worker needs its own, they hold state
+    private void buildWorker(int generation) {
+        Tessellator tessellator = new Tessellator();
         try {
-            while (!this.cancelled) {
+            while (!this.cancelled && generation == this.buildGeneration) {
                 this.waitingSlots.acquire();
+                if (this.cancelled || generation != this.buildGeneration) {
+                    this.waitingSlots.release();
+                    return;
+                }
                 int slot = this.claimed.getAndIncrement();
                 if (slot >= this.pending.length) {
                     this.waitingSlots.release();
@@ -233,7 +261,7 @@ public class LevelRenderer implements LevelListener {
                     built = chunk.computeAll(tessellator);
                 } catch (Throwable t) {
                     System.err.println("[loading] worker failed on a chunk, building it on the main thread: " + t);
-                    tessellator = new Tessellator();   // it may have been left mid-capture
+                    tessellator = new Tessellator();
                 }
                 this.finished.add(new Result(chunk, built));
             }
@@ -242,10 +270,6 @@ public class LevelRenderer implements LevelListener {
         }
     }
 
-    /**
-     * GL thread: compiles display lists for chunks the workers finished, for at most maxChunks chunks or until the time is up.
-     * returns true while there is more to do
-     */
     public boolean uploadBuiltChunks(int maxChunks, long deadlineNanos) {
         int done = 0;
         while (done < maxChunks && System.nanoTime() < deadlineNanos) {
@@ -270,7 +294,6 @@ public class LevelRenderer implements LevelListener {
         return more;
     }
 
-    /** stops the workers early (loading abandoned) */
     public void cancelParallelBuild() {
         this.cancelled = true;
         this.waitingSlots.release(MAX_FINISHED_WAITING);
@@ -290,7 +313,6 @@ public class LevelRenderer implements LevelListener {
         setDirty(minX, minY, minZ, maxX, maxY, maxZ, false);
     }
 
-    // urgent = rebuild these chunks at the next draw instead of waiting for the per-frame budget
     private void setDirty(int minX, int minY, int minZ, int maxX, int maxY, int maxZ, boolean urgent) {
         minX /= CHUNK_SIZE;
         minY /= CHUNK_SIZE;
@@ -323,8 +345,6 @@ public class LevelRenderer implements LevelListener {
     }
 
     private static final float MAX_BILLBOARD_OVERHANG = 1.0F;
-
-    // largest edge of any registered billboard sprite in blocks, grows the chunk cull box so a billboard whose origin chunk is off-screen still draws. computed from the registered tiles
     private final float maxBillboardSize;
 
     private static float findMaxBillboardSize() {
@@ -345,7 +365,6 @@ public class LevelRenderer implements LevelListener {
     public void renderBillboards(float cameraYaw, float cameraPitch, double eyeX, double eyeY, double eyeZ) {
         boolean scaleByDistance = !Double.isNaN(eyeX);
 
-        // Remembered for the selection code (exact hit points) and the billboard blink.
         if (scaleByDistance) {
             CameraRay.set(eyeX, eyeY, eyeZ, cameraYaw, cameraPitch);
         } else {
@@ -353,7 +372,6 @@ public class LevelRenderer implements LevelListener {
         }
 
         Frustum frustum = Frustum.getFrustum();
-
         List<int[]> visibleBillboards = new ArrayList<>();
 
         float maxBillboardHeight = this.maxBillboardSize;
@@ -361,6 +379,9 @@ public class LevelRenderer implements LevelListener {
         float maxOverhang = Math.max(MAX_BILLBOARD_OVERHANG, (maxBillboardHeight * maxScaleFactor) / 2.0F);
 
         for (Chunk chunk : this.chunks) {
+            if (chunk.getBillboardPositions().isEmpty() || !withinRenderDistance(chunk.boundingBox, maxOverhang)) {
+                continue;
+            }
             AABB billboardCullBox = chunk.boundingBox.grow(maxOverhang, maxBillboardHeight * maxScaleFactor, maxOverhang);
             if (!frustum.cubeInFrustum(billboardCullBox)) {
                 continue;
@@ -389,77 +410,71 @@ public class LevelRenderer implements LevelListener {
         visibleBillboards.sort(new Comparator<int[]>() {
             @Override
             public int compare(int[] a, int[] b) {
-                float depthA = (a[0] + 0.5F) * forwardX + (float) a[1] * forwardY + (a[2] + 0.5F) * forwardZ;
-                float depthB = (b[0] + 0.5F) * forwardX + (float) b[1] * forwardY + (b[2] + 0.5F) * forwardZ;
-
+                float depthA = (a[0] + 0.5F) * forwardX + (a[1] + 0.5F) * forwardY + (a[2] + 0.5F) * forwardZ;
+                float depthB = (b[0] + 0.5F) * forwardX + (b[1] + 0.5F) * forwardY + (b[2] + 0.5F) * forwardZ;
                 return Float.compare(depthB, depthA);
             }
         });
 
-        glEnable(GL_TEXTURE_2D);
-        glDisable(GL_FOG);
+        BillboardShader.bind();
+        try {
+            glEnable(GL_TEXTURE_2D);
+            glEnable(GL_ALPHA_TEST);
+            glAlphaFunc(GL_GREATER, 0.01F);
 
-        glEnable(GL_ALPHA_TEST);
-        glAlphaFunc(GL_GREATER, 0.01F);
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glDepthMask(false);
 
-        glDepthMask(false);
+            Textures.bind(Chunk.getAtlasTexture());
 
-        Textures.bind(Chunk.getAtlasTexture());
+            float rotRad = (float) Math.toRadians(-cameraYaw);
+            float cosYaw = (float) Math.cos(rotRad);
+            float sinYaw = (float) Math.sin(rotRad);
 
-        float rotRad = (float) Math.toRadians(-cameraYaw);
-        float cosYaw = (float) Math.cos(rotRad);
-        float sinYaw = (float) Math.sin(rotRad);
+            this.tessellator.init();
+            for (int[] pos : visibleBillboards) {
+                int x = pos[0], y = pos[1], z = pos[2];
+                Tile tile = Tile.byId(this.level.getTile(x, y, z));
+                if (!(tile instanceof BillboardTile)) {
+                    continue;
+                }
+                BillboardTile billboardTile = (BillboardTile) tile;
 
-        this.tessellator.init();
-        for (int[] pos : visibleBillboards) {
-            int x = pos[0], y = pos[1], z = pos[2];
-            Tile tile = Tile.byId(this.level.getTile(x, y, z));
-            if (!(tile instanceof BillboardTile)) {
-                continue;
+                float worldX = x + 0.5F + billboardTile.getPivotOffsetX();
+                float worldY = y - this.level.getBillboardDrop(x, y, z);
+                float worldZ = z + 0.5F + billboardTile.getPivotOffsetZ();
+
+                float scale = 1.0F;
+                if (scaleByDistance) {
+                    double dx = eyeX - worldX;
+                    double dy = eyeY - worldY;
+                    double dz = eyeZ - worldZ;
+                    float distance = (float) Math.sqrt(dx * dx + dy * dy + dz * dz);
+                    scale = BillboardTile.getDistanceScale(distance);
+                }
+
+                billboardTile.renderBillboardBatched(this.tessellator, this.level, x, y, z, Chunk.getTotalAtlasSlots(),
+                        worldX, worldY, worldZ, cosYaw, sinYaw, scale);
             }
-            BillboardTile billboardTile = (BillboardTile) tile;
+            this.tessellator.flush();
 
-            // Centre of the tile's whole footprint (the offset is 0 for ordinary 1x1 billboards).
-            // It is added here, in world space, so it doesn't swing around with the camera yaw.
-            float worldX = x + 0.5F + billboardTile.getPivotOffsetX();
-            float worldY = y - this.level.getBillboardDrop(x, y, z);   // lowered onto a slab, say
-            float worldZ = z + 0.5F + billboardTile.getPivotOffsetZ();
+            glDepthMask(true);
+            glDisable(GL_BLEND);
 
-            float scale = 1.0F;
-            if (scaleByDistance) {
-                double dx = eyeX - worldX;
-                double dy = eyeY - worldY;
-                double dz = eyeZ - worldZ;
-                float distance = (float) Math.sqrt(dx * dx + dy * dy + dz * dz);
-                scale = BillboardTile.getDistanceScale(distance);
-            }
-
-            billboardTile.renderBillboardBatched(this.tessellator, this.level, x, y, z, Chunk.getTotalAtlasSlots(),
-                    worldX, worldY, worldZ, cosYaw, sinYaw, scale);
+            glEnable(GL_ALPHA_TEST);
+            glAlphaFunc(GL_GREATER, 0.1F);
+        } finally {
+            BillboardShader.unbind();
+            glDisable(GL_TEXTURE_2D);
         }
-        this.tessellator.flush();
-
-        glDepthMask(true);
-        glDisable(GL_BLEND);
-
-        glEnable(GL_ALPHA_TEST);
-        glAlphaFunc(GL_GREATER, 0.1F);
-
-        glDisable(GL_FOG);
-        glDisable(GL_TEXTURE_2D);
     }
+
     public void renderHit(HitResult hitResult) {
         renderHit(hitResult, CameraRay.yaw());
     }
 
-    /**
-     * draws the selection overlay, following the shape that was hit: one face of a slab or stair step, the whole face of a multi-tile object, or a blink of the billboard sprite itself
-     *
-     * the blink needs the camera yaw, without it the billboard's box is outlined
-     */
     public void renderHit(HitResult hitResult, float cameraYaw) {
         if (hitResult.liquid) {
             renderLiquidHit(hitResult);
@@ -469,7 +484,6 @@ public class LevelRenderer implements LevelListener {
 
         Tile tile = Tile.byId(this.level.getTile(hitResult.x, hitResult.y, hitResult.z));
         if (hitResult.overlayId >= 0) {
-            // The struck part is a tile sharing the cell, not the cell's normal tile.
             SubTile shared = this.level.getSubTiles().find(hitResult.x, hitResult.y, hitResult.z, hitResult.overlayId);
             if (shared != null) {
                 tile = Tile.byId(shared.tileId);
@@ -485,9 +499,6 @@ public class LevelRenderer implements LevelListener {
         glBlendFunc(GL_SRC_ALPHA, GL_CURRENT_BIT);
         glColor4f(1.0f, 1.0f, 1.0f, pulse);
 
-        // The overlay lies exactly in the plane of the block's own face. Pull it slightly towards the
-        // camera (polygon offset, plus a tiny nudge along the face normal) and don't let it write
-        // depth, so the two surfaces never fight, whatever path the chunk mesh took to the screen.
         glEnable(GL_POLYGON_OFFSET_FILL);
         glPolygonOffset(-2.0F, -4.0F);
         glDepthMask(false);
@@ -504,7 +515,6 @@ public class LevelRenderer implements LevelListener {
         glDisable(GL_BLEND);
     }
 
-    // the targeted liquid: the hit face of its cell, up to the liquid's surface
     private void renderLiquidHit(HitResult hit) {
         LiquidTile liquid = this.level.getLiquids().get(hit.x, hit.y, hit.z);
         if (liquid == null) {
@@ -533,7 +543,6 @@ public class LevelRenderer implements LevelListener {
         glDisable(GL_BLEND);
     }
 
-    // the hit face of whatever part of the tile was hit
     private void renderFaceOverlay(Tile tile, HitResult hitResult) {
         int[] normal = HIT_FACE_NORMALS[hitResult.face];
         glPushMatrix();
@@ -541,14 +550,11 @@ public class LevelRenderer implements LevelListener {
 
         this.tessellator.init();
 
-        // A multi-tile object is outlined as a whole: the hit face of its full bounds, not of one cell.
         MultiTileInstance object = this.level.getMultiTile(hitResult.x, hitResult.y, hitResult.z);
         if (object != null && !tile.hasCustomOutline()) {
             renderBoxFace(object.x, object.y, object.z,
                     object.x + object.sizeX, object.y + object.sizeY, object.z + object.sizeZ, hitResult.face);
         } else {
-            // The box the ray struck (one step of a staircase, a slab), else the tile's outline box.
-            // (A tile with a custom outline, like a door, ignores the single struck box: it wraps the whole shape.)
             AABB box = tile.hasCustomOutline() ? null : hitResult.hitBox;
             if (box == null) {
                 box = tile.getOutlineAABB(this.level, hitResult.x, hitResult.y, hitResult.z);
@@ -565,7 +571,6 @@ public class LevelRenderer implements LevelListener {
         glPopMatrix();
     }
 
-    // redraws the sprite (same quad, same place) additively so it blinks in its own shape
     private void renderBillboardBlink(BillboardTile billboard, HitResult hitResult, float cameraYaw, float pulse) {
         glEnable(GL_TEXTURE_2D);
         glEnable(GL_ALPHA_TEST);
@@ -576,7 +581,6 @@ public class LevelRenderer implements LevelListener {
         float cosYaw = (float) Math.cos(rotRad);
         float sinYaw = (float) Math.sin(rotRad);
 
-        // Same placement as renderBillboards (the hit position is the object's origin cell).
         float worldX = hitResult.x + 0.5F + billboard.getPivotOffsetX();
         float worldY = hitResult.y - this.level.getBillboardDrop(hitResult.x, hitResult.y, hitResult.z);
         float worldZ = hitResult.z + 0.5F + billboard.getPivotOffsetZ();
@@ -590,15 +594,12 @@ public class LevelRenderer implements LevelListener {
         glDisable(GL_TEXTURE_2D);
     }
 
-    // outward normal per face, numbered like Tile.FACE_*
     private static final int[][] HIT_FACE_NORMALS = {
             {0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0}
     };
 
-    // how far (in blocks) the selection overlay floats off the face it highlights
     private static final float HIT_FACE_NUDGE = 0.002F;
 
-    // one face of an axis-aligned box, wound like Tile.renderFace
     private void renderBoxFace(float minX, float minY, float minZ, float maxX, float maxY, float maxZ, int face) {
         if (face == Tile.FACE_BOTTOM) {
             this.tessellator.vertex(minX, minY, maxZ);
@@ -650,8 +651,6 @@ public class LevelRenderer implements LevelListener {
 
     @Override
     public void tileChanged(int x, int y, int z) {
-        // the block itself and the faces next to it change right now, only light is allowed to lag
-        // two cells vertically: a stack of metal bars picks its texture slice from up to two neighbours (see PaneTile), so a change two cells away can alter this cell's look
         setDirty(x - 1, y - 2, z - 1, x + 1, y + 2, z + 1, true);
     }
 

@@ -30,6 +30,8 @@ public final class TileIconRenderer {
     private static final double ICON_PITCH_DEGREES = 30.0;
     private static final double ICON_YAW_DEGREES = -45.0;
 
+    // The icon's own tessellator. The icon flags (full bright, self-cull faces) are set on it, so they are never visible
+    // to the chunk build workers, which each use a tessellator of their own. Render thread only.
     private static Tessellator tessellator;
 
     private TileIconRenderer() {
@@ -68,14 +70,18 @@ public final class TileIconRenderer {
         if (tile == null) {
             return;
         }
+        // a cube is built by Tile.render, which needs the level; only a flat sprite can be drawn without one
+        if (level == null && !tile.isBillboard()) {
+            return;
+        }
         if (tessellator == null) {
             tessellator = new Tessellator();
         }
 
-        boolean depthWasOn = glIsEnabled(GL_DEPTH_TEST);
-        boolean cullWasOn = glIsEnabled(GL_CULL_FACE);
-        boolean textureWasOn = glIsEnabled(GL_TEXTURE_2D);
-        boolean blendWasOn = glIsEnabled(GL_BLEND);
+        // One push/pop restores everything this method changes (enables, blend and alpha func, depth func and mask).
+        // That replaces a handful of glIsEnabled / glGetInteger queries per icon, which can stall the driver and
+        // add up fast: the selected-tile HUD draws several icons every frame.
+        glPushAttrib(GL_ENABLE_BIT | GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         glMatrixMode(GL_PROJECTION);
         glPushMatrix();
@@ -92,6 +98,7 @@ public final class TileIconRenderer {
         // -size Y scale flips their winding.
         glDisable(GL_CULL_FACE);
         glEnable(GL_DEPTH_TEST);
+        glDepthMask(true);   // the darken pass relies on the icon having written its depth
         glClear(GL_DEPTH_BUFFER_BIT);
 
         glEnable(GL_TEXTURE_2D);
@@ -102,10 +109,15 @@ public final class TileIconRenderer {
         tessellator.init();
         glTranslatef(centerX, centerY, 0.0F);
 
+        // half the side of the square the icon can cover, for the darken quad
+        float coverHalf = size * 1.5F;
+
         glPushMatrix();   // the icon's own transforms (scale / rotation) end at the flush below
 
         if (tile.isBillboard()) {
-            buildSpriteQuad(tessellator, tile, size * BILLBOARD_SCALE * billboardScale, cropSprites);
+            float quadSize = size * BILLBOARD_SCALE * billboardScale;
+            coverHalf = Math.max(coverHalf, quadSize * 0.5F * 1.05F);
+            buildSpriteQuad(tessellator, tile, quadSize, cropSprites);
         } else {
             glScalef(size, -size, size);
             glRotatef(30.0F, 1.0F, 0.0F, 0.0F);
@@ -114,25 +126,29 @@ public final class TileIconRenderer {
             // on the centre. A multi-tile object (a 1x2x1 door...) spans its whole footprint from that
             // cell, so shift by half the footprint instead and it is centred as a whole.
             int iconData = tile.getIconData();
-            glTranslatef(1.0F - tile.getSizeX(iconData) / 2.0F,
-                    1.0F - tile.getSizeY() / 2.0F,
-                    1.0F - tile.getSizeZ(iconData) / 2.0F);
+            int sizeX = tile.getSizeX(iconData);
+            int sizeY = tile.getSizeY();
+            int sizeZ = tile.getSizeZ(iconData);
+            glTranslatef(1.0F - sizeX / 2.0F,
+                    1.0F - sizeY / 2.0F,
+                    1.0F - sizeZ / 2.0F);
 
-            // Icons ignore the day-night ambient, otherwise normal tiles are nearly black at night.
-            if (level != null) {
-                level.setFullBright(true);
-            }
-            // The icon honours the tile's self-cull faces (the cull faces set in TileRegistry) as if the
-            // cube sat inside a mass of the same tile: the faces the camera can't see are the ones
-            // that touch it, so they are dropped. Only tiles that set self-cull faces are affected.
-            Tile.setIconSelfFaces(hiddenFaces(spinDegrees));
+            // a big multi-tile object is wider than the single cube the darken quad was sized for
+            float footprint = (float) Math.sqrt(sizeX * sizeX + sizeZ * sizeZ);
+            float reach = Math.max(footprint, footprint * 0.5F + sizeY * 0.866F) * 0.5F * 1.1F;
+            coverHalf = Math.max(coverHalf, size * reach);
+
+            // Icons ignore the day-night ambient (otherwise normal tiles are nearly black at night) and honour the
+            // tile's self-cull faces (the cull faces set in TileRegistry) as if the cube sat inside a mass of the same
+            // tile: the faces the camera can't see are the ones that touch it, so they are dropped. Only tiles that set
+            // self-cull faces are affected.
+            // Both are set on this renderer's own tessellator, not on the level or the Tile class, so a chunk being built
+            // on a worker thread at the same moment never sees them.
+            tessellator.setIconMode(true, hiddenFaces(spinDegrees));
             try {
                 tile.render(tessellator, level, 0, -1, -1, -1, Chunk.getTotalAtlasSlots(), iconData);
             } finally {
-                Tile.setIconSelfFaces(0);
-                if (level != null) {
-                    level.setFullBright(false);
-                }
+                tessellator.setIconMode(false, 0);
             }
         }
 
@@ -141,7 +157,7 @@ public final class TileIconRenderer {
         glPopMatrix();
 
         if (darken > 0.0F) {
-            darkenIcon(size, Math.min(1.0F, darken));
+            darkenIcon(coverHalf, Math.min(1.0F, darken));
         }
 
         glPopMatrix();
@@ -149,10 +165,7 @@ public final class TileIconRenderer {
         glPopMatrix();
         glMatrixMode(GL_MODELVIEW);
 
-        setEnabled(GL_DEPTH_TEST, depthWasOn);
-        setEnabled(GL_CULL_FACE, cullWasOn);
-        setEnabled(GL_TEXTURE_2D, textureWasOn);
-        setEnabled(GL_BLEND, blendWasOn);
+        glPopAttrib();
     }
 
     // faces (bit per Tile.FACE_*) pointing away from the icon's camera, which looks down -z
@@ -180,10 +193,8 @@ public final class TileIconRenderer {
     // translucent black quad over the icon, only where the icon is
     // the icon wrote its depth (the area around it kept the cleared 1.0), so a quad at depth 0.9 passes the GEQUAL test only on the icon's pixels
     // (projection is 100..300, icon sits at 200 = depth 0.5, z = -280 is depth 0.9)
-    private static void darkenIcon(float size, float darken) {
-        int depthFunc = glGetInteger(GL_DEPTH_FUNC);
-        float half = size * 1.5F;
-
+    // the caller's glPopAttrib restores the depth func, so there is no need to query it here
+    private static void darkenIcon(float half, float darken) {
         glDepthFunc(GL_GEQUAL);
         glDisable(GL_TEXTURE_2D);
         glColor4f(0.0F, 0.0F, 0.0F, darken);
@@ -194,15 +205,6 @@ public final class TileIconRenderer {
         glVertex3f(-half, half, -80.0F);
         glEnd();
         glColor4f(1.0F, 1.0F, 1.0F, 1.0F);
-        glDepthFunc(depthFunc);
-    }
-
-    private static void setEnabled(int capability, boolean enabled) {
-        if (enabled) {
-            glEnable(capability);
-        } else {
-            glDisable(capability);
-        }
     }
 
     private static void buildSpriteQuad(Tessellator t, Tile tile, float size, boolean crop) {

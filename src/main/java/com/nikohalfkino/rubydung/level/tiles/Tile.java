@@ -453,21 +453,6 @@ public class Tile {
         return this.isSolid && !this.isTransparent;
     }
 
-    // tile icons (TileIconRenderer)
-
-    // while an icon is drawn: world faces (bit per FACE_*) the icon pretends border another cell of the same tile, so self-cull faces (setSelfCull) are left out there too
-    // the renderer sets the faces the icon's camera can't see, so the see-through back of a glass cube or grate isn't drawn through its front. 0 outside icons
-    private static int iconSelfFaces = 0;
-
-    public static void setIconSelfFaces(int worldFaceMask) {
-        iconSelfFaces = worldFaceMask;
-    }
-
-    // whether the icon being drawn treats the neighbour on this world face (FACE_*) as the same tile
-    protected static boolean iconTouchesSelf(int worldFace) {
-        return (iconSelfFaces & (1 << worldFace)) != 0;
-    }
-
     protected boolean shouldRenderFace(Level level, int x, int y, int z) {
         int tileId = level.getTile(x, y, z);
         if (tileId == 0) {
@@ -572,7 +557,7 @@ public class Tile {
 
     public void render(Tessellator tessellator, Level level, int layer, int x, int y, int z, int totalAtlasSlots, int direction) {
         boolean smooth    = level.hasLightSources();
-        boolean fullBright = level.isFullBright(); // tile icons: plain shade, drawn without the shader
+        boolean fullBright = tessellator.isIconFullBright(); // tile icons: plain shade, drawn without the shader
         boolean emissive  = emitsLight();
         float[] block     = new float[4];
 
@@ -591,7 +576,7 @@ public class Tile {
                 nz = z;
             } else {
                 int cullFace = getCullFace(face, direction);
-                if (cullsSelfFace(cullFace) && iconTouchesSelf(face)) {
+                if (cullsSelfFace(cullFace) && tessellator.iconTouchesSelf(face)) {
                     continue;   // an icon: a self-culled face that would touch the same tile
                 }
                 if (!shouldRenderFace(level, x, y, z, nx, ny, nz, cullFace)) {
