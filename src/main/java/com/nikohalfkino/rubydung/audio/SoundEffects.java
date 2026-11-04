@@ -4,23 +4,28 @@ import com.nikohalfkino.rubydung.util.GameSettings;
 
 import javax.sound.sampled.AudioFormat;
 import javax.sound.sampled.AudioSystem;
-import javax.sound.sampled.Clip;
-import javax.sound.sampled.FloatControl;
-import javax.sound.sampled.LineEvent;
-import java.io.ByteArrayOutputStream;
+import javax.sound.sampled.SourceDataLine;
 import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
 
 /**
  * fire-and-forget sound effects from /assets/rubydung/sfx/
  *
  * "door_open" is sfx/tiles/door_open, "ui/menu_open" is relative to sfx/
  *
- * each file is decoded once and kept as pcm, everything plays on one daemon thread
+ * each file is decoded once and kept as pcm. instead of opening a Clip per sound, every
+ * sound is a "voice" that a single mixer thread adds together and writes to ONE line,
+ * so any number of sounds overlap and nothing depends on how many lines the OS allows
  */
 public final class SoundEffects {
 
@@ -33,17 +38,39 @@ public final class SoundEffects {
     // how far playRandom shifts the pitch either way
     public static final float DEFAULT_PITCH_VARIATION = 0.12F;
 
-    private static final Sample MISSING = new Sample(null, 0, 0);
+    // mixer output format, samples of any rate/channel count are converted on the fly
+    private static final int OUT_RATE = 44100;
+    private static final int OUT_CHANNELS = 2;
+
+    // ~11 ms per mix block, ~46 ms of line buffer. smaller = lower latency, more risk of crackle
+    private static final int BLOCK_FRAMES = 512;
+    private static final int LINE_BUFFER_FRAMES = 2048;
+
+    // when more than this are playing the oldest ones get cut
+    private static final int MAX_VOICES = 48;
+
+    private static final Sample MISSING = new Sample(null, 0, 0, 0);
 
     private static final Map<String, Sample> CACHE = new ConcurrentHashMap<>();
-    private static final Map<String, Long> LAST_PLAYED = new ConcurrentHashMap<>();
+    private static final Map<String, Long> LAST_PLAYED = new HashMap<>();
     private static final Random RANDOM = new Random();
 
-    private static final ExecutorService EXECUTOR = Executors.newSingleThreadExecutor(runnable -> {
-        Thread thread = new Thread(runnable, "SoundEffects");
+    // decoding only, never touches the mixer so a slow first load can't delay playing sounds
+    private static final ExecutorService LOADER = Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "SoundEffects-Loader");
         thread.setDaemon(true);
         return thread;
     });
+
+    // new voices wait here until the mixer picks them up
+    private static final BlockingQueue<Voice> INCOMING = new LinkedBlockingQueue<>();
+    private static volatile boolean mixerFailed;
+
+    static {
+        Thread mixer = new Thread(SoundEffects::mixLoop, "SoundEffects-Mixer");
+        mixer.setDaemon(true);
+        mixer.start();
+    }
 
     private SoundEffects() {}
 
@@ -88,7 +115,7 @@ public final class SoundEffects {
 
     /** decodes ahead of time so the first play has no delay */
     public static void preload(String... names) {
-        EXECUTOR.execute(() -> {
+        LOADER.execute(() -> {
             for (String name : names) {
                 load(name);
             }
@@ -96,71 +123,109 @@ public final class SoundEffects {
     }
 
     private static void enqueue(String gapKey, String name, float volume, float pitch) {
-        long now = System.currentTimeMillis();
-        Long last = LAST_PLAYED.put(gapKey, now);
-        if (last != null && now - last < MIN_GAP_MS) {
+        if (mixerFailed || !passesGap(gapKey)) {
             return;
         }
-        EXECUTOR.execute(() -> playNow(name, volume, pitch));
+
+        Sample cached = CACHE.get(name);
+        if (cached != null) {
+            // already decoded: hand straight to the mixer, no thread hop
+            startVoice(cached, volume, pitch);
+        } else {
+            LOADER.execute(() -> startVoice(load(name), volume, pitch));
+        }
     }
 
-    private static void playNow(String name, float volume, float pitch) {
-        Sample sample = load(name);
-        if (sample == MISSING) {
+    // only counts a sound as "played" when it actually gets through. the old version
+    // refreshed the timestamp on dropped calls too, so anything retriggered faster than
+    // the gap (holding a key, mining) was muted for as long as it kept being triggered
+    private static boolean passesGap(String key) {
+        long now = System.currentTimeMillis();
+        synchronized (LAST_PLAYED) {
+            Long last = LAST_PLAYED.get(key);
+            if (last != null && now - last < MIN_GAP_MS) {
+                return false;
+            }
+            LAST_PLAYED.put(key, now);
+            return true;
+        }
+    }
+
+    private static void startVoice(Sample sample, float volume, float pitch) {
+        if (sample == MISSING || mixerFailed) {
             return;
         }
+
+        // master volume is applied by the mixer, so the slider also affects sounds already playing
+        if (getMasterVolume() * volume <= 0.0001F) {
+            return;
+        }
+
+        double step = Math.max(0.01D, pitch) * sample.sampleRate / OUT_RATE;
+        INCOMING.offer(new Voice(sample, volume, step));
+    }
+
+    // ---- mixer ----
+
+    private static void mixLoop() {
+        SourceDataLine line;
+        try {
+            AudioFormat format = new AudioFormat(OUT_RATE, 16, OUT_CHANNELS, true, false);
+            line = AudioSystem.getSourceDataLine(format);
+            line.open(format, LINE_BUFFER_FRAMES * OUT_CHANNELS * 2);
+            line.start();
+        } catch (Exception e) {
+            System.err.println("SoundEffects: could not open audio line, sfx disabled: " + e);
+            mixerFailed = true;
+            INCOMING.clear();
+            return;
+        }
+
+        List<Voice> active = new ArrayList<>();
+        float[] mix = new float[BLOCK_FRAMES * OUT_CHANNELS];
+        byte[] out = new byte[BLOCK_FRAMES * OUT_CHANNELS * 2];
 
         try {
-            byte[] pcm = Math.abs(pitch - 1.0F) < 0.001F ? sample.pcm : resample(sample.pcm, sample.channels, pitch);
-            AudioFormat format = new AudioFormat(sample.sampleRate, 16, sample.channels, true, false);
-            Clip clip = AudioSystem.getClip();
-            clip.open(format, pcm, 0, pcm.length);
-
-            if (clip.isControlSupported(FloatControl.Type.MASTER_GAIN)) {
-                FloatControl gain = (FloatControl) clip.getControl(FloatControl.Type.MASTER_GAIN);
-                float linear = Math.max(0.0001F, getMasterVolume() * volume);
-                float decibels = (float) (20.0 * Math.log10(linear));
-                gain.setValue(Math.max(gain.getMinimum(), Math.min(gain.getMaximum(), decibels)));
-            }
-
-            clip.addLineListener(event -> {
-                if (event.getType() == LineEvent.Type.STOP) {
-                    clip.close();
+            while (true) {
+                if (active.isEmpty()) {
+                    // nothing playing: sleep until a sound shows up instead of mixing silence
+                    active.add(INCOMING.take());
                 }
-            });
-            clip.start();
-        } catch (Exception e) {
-            System.err.println("SoundEffects: could not play " + name + ": " + e);
-        }
-    }
+                INCOMING.drainTo(active);
 
-    // changes pitch by playing samples faster/slower, so higher = shorter
-    private static byte[] resample(byte[] pcm, int channels, double pitch) {
-        int frames = pcm.length / (2 * channels);
-        int outFrames = Math.max(1, (int) (frames / pitch));
-        byte[] out = new byte[outFrames * channels * 2];
+                while (active.size() > MAX_VOICES) {
+                    active.remove(0);
+                }
 
-        for (int i = 0; i < outFrames; i++) {
-            double position = i * pitch;
-            int first = Math.min(frames - 1, (int) position);
-            int second = Math.min(frames - 1, first + 1);
-            double fraction = position - first;
+                Arrays.fill(mix, 0.0F);
+                for (int i = active.size() - 1; i >= 0; i--) {
+                    if (active.get(i).mixInto(mix)) {
+                        active.remove(i);
+                    }
+                }
 
-            for (int c = 0; c < channels; c++) {
-                int a = sampleAt(pcm, first * channels + c);
-                int b = sampleAt(pcm, second * channels + c);
-                int value = (int) Math.round(a + (b - a) * fraction);
-                int at = (i * channels + c) * 2;
-                out[at] = (byte) value;
-                out[at + 1] = (byte) (value >> 8);
+                for (int i = 0; i < mix.length; i++) {
+                    int value = Math.round(mix[i] * 32767.0F);
+                    value = Math.max(-32768, Math.min(32767, value));
+                    out[i * 2] = (byte) value;
+                    out[i * 2 + 1] = (byte) (value >> 8);
+                }
+
+                // blocks while the line buffer is full, which is what paces this loop
+                line.write(out, 0, out.length);
             }
+        } catch (InterruptedException e) {
+            // daemon thread, nothing to clean up beyond the line
+        } catch (Exception e) {
+            System.err.println("SoundEffects: mixer stopped: " + e);
+            mixerFailed = true;
+        } finally {
+            line.stop();
+            line.close();
         }
-        return out;
     }
 
-    private static int sampleAt(byte[] pcm, int index) {
-        return (short) ((pcm[index * 2] & 0xFF) | (pcm[index * 2 + 1] << 8));
-    }
+    // ---- decoding ----
 
     private static Sample load(String name) {
         Sample cached = CACHE.get(name);
@@ -186,17 +251,25 @@ public final class SoundEffects {
             decoder = new MusicPlayer.Decoder(in);
             int channels = decoder.channels;
             float[] chunk = new float[4096 * channels];
-            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            short[] data = new short[1 << 16];
+            int length = 0;
 
             int frames;
             while ((frames = decoder.read(chunk, 4096)) > 0) {
-                for (int i = 0; i < frames * channels; i++) {
-                    int value = Math.max(-32768, Math.min(32767, (int) (chunk[i] * 32767.0F)));
-                    bytes.write(value & 0xFF);
-                    bytes.write((value >> 8) & 0xFF);
+                int count = frames * channels;
+                if (length + count > data.length) {
+                    data = Arrays.copyOf(data, Math.max(data.length * 2, length + count));
+                }
+                for (int i = 0; i < count; i++) {
+                    data[length++] = (short) Math.max(-32768, Math.min(32767, (int) (chunk[i] * 32767.0F)));
                 }
             }
-            return new Sample(bytes.toByteArray(), decoder.sampleRate, channels);
+
+            if (length == 0) {
+                System.err.println("SoundEffects: empty sound " + resource);
+                return MISSING;
+            }
+            return new Sample(Arrays.copyOf(data, length), decoder.sampleRate, channels, length / channels);
         } catch (Exception e) {
             System.err.println("SoundEffects: failed to decode " + resource + ": " + e);
             return MISSING;
@@ -208,14 +281,59 @@ public final class SoundEffects {
     }
 
     private static final class Sample {
-        final byte[] pcm;
+        final short[] pcm;
         final int sampleRate;
         final int channels;
+        final int frames;
 
-        Sample(byte[] pcm, int sampleRate, int channels) {
+        Sample(short[] pcm, int sampleRate, int channels, int frames) {
             this.pcm = pcm;
             this.sampleRate = sampleRate;
             this.channels = channels;
+            this.frames = frames;
+        }
+    }
+
+    // one playing instance of a sample. only the mixer thread touches position
+    private static final class Voice {
+        final Sample sample;
+        final float gain;
+        final double step; // source frames per output frame (pitch * rate conversion)
+        double position;
+
+        Voice(Sample sample, float gain, double step) {
+            this.sample = sample;
+            this.gain = gain;
+            this.step = step;
+        }
+
+        /** adds one block into the buffer, true once the sound has finished */
+        boolean mixInto(float[] mix) {
+            short[] pcm = sample.pcm;
+            int channels = sample.channels;
+            int last = sample.frames - 1;
+            float scale = gain * Math.max(0.0F, getMasterVolume()) / 32768.0F;
+            double pos = position;
+
+            for (int n = 0; n < BLOCK_FRAMES && pos <= last; n++, pos += step) {
+                int i0 = (int) pos;
+                int i1 = Math.min(i0 + 1, last);
+                float fraction = (float) (pos - i0);
+
+                int a = i0 * channels;
+                int b = i1 * channels;
+                float left = pcm[a] + (pcm[b] - pcm[a]) * fraction;
+                float right = left;
+                if (channels > 1) {
+                    right = pcm[a + 1] + (pcm[b + 1] - pcm[a + 1]) * fraction;
+                }
+
+                mix[n * 2] += left * scale;
+                mix[n * 2 + 1] += right * scale;
+            }
+
+            position = pos;
+            return pos > last;
         }
     }
 }

@@ -56,7 +56,11 @@ tasks.register<Copy>("extractNatives") {
 }
 
 tasks.register<JavaExec>("run") {
-    jvmArgs = listOf("-Dorg.lwjgl.librarypath=${project.projectDir}/run/natives")
+    jvmArgs = listOf(
+        "-Dorg.lwjgl.librarypath=${project.projectDir}/run/natives",
+        // keep options and worlds in run/ while developing, not in your real user folder
+        "-Dstrata.dataDir=${project.projectDir}/run"
+    )
     mainClass.set(mainClassName)
     classpath = sourceSets["main"].runtimeClasspath
     workingDir = file("${project.projectDir}/run")
@@ -112,7 +116,12 @@ val jpackageVersion: String = run {
 }
 
 val packageInputDir = layout.buildDirectory.dir("jpackage-input")
-val packageOutputDir = layout.buildDirectory.dir("package")
+val portableOutputDir = layout.buildDirectory.dir("package")      // portable app image (zipped by the workflow)
+val installerOutputDir = layout.buildDirectory.dir("installer")   // .exe / .deb / .dmg
+
+// Keep this UUID forever. Windows uses it to recognise "the same app" so a new installer upgrades
+// the old install instead of installing next to it.
+val windowsUpgradeUuid = "6f1c3a52-8d4e-4b7a-9c21-5e0a7b3d9f14"
 
 tasks.register<Sync>("preparePackageInput") {
     dependsOn(tasks.shadowJar)
@@ -130,31 +139,74 @@ tasks.register<Sync>("preparePackageInput") {
     }
 }
 
-tasks.register<Exec>("packageApp") {
+// arguments shared by the portable image and the installer
+fun jpackageArgs(type: String, outputDir: File): MutableList<String> {
+    val args = mutableListOf(
+        "jpackage",
+        "--type", type,
+        "--name", appName,
+        "--app-version", jpackageVersion,
+        "--input", packageInputDir.get().asFile.absolutePath,
+        "--main-jar", tasks.shadowJar.get().archiveFileName.get(),
+        "--main-class", mainClassName,
+        "--dest", outputDir.absolutePath,
+        "--java-options", "-Dorg.lwjgl.librarypath=\$APPDIR/natives",
+        "--java-options", "-Djtalk.home=\$APPDIR/jtalk",
+    )
+
+    val iconFile = file("src/main/resources/icon.$iconExtension")
+    if (iconFile.exists()) {
+        args += listOf("--icon", iconFile.absolutePath)
+    }
+    return args
+}
+
+// Portable: a plain folder with a bundled Java runtime. The portable.txt marker tells the game
+// (GameDirectory) to keep options and worlds inside that folder instead of the user's data folder.
+tasks.register<Exec>("packagePortable") {
     group = "distribution"
-    description = "Packages the game as a native app image with a bundled Java runtime (jpackage)."
+    description = "Packages the game as a portable app image that stores its data next to itself."
     dependsOn("preparePackageInput")
 
     doFirst {
-        val outputDir = packageOutputDir.get().asFile
+        val outputDir = portableOutputDir.get().asFile
+        outputDir.deleteRecursively()
+        commandLine(jpackageArgs("app-image", outputDir))
+    }
+
+    doLast {
+        File(portableOutputDir.get().asFile, "$appName/portable.txt").writeText(
+            "Portable mode: options and worlds are stored in this folder.\n" +
+                    "Delete this file to store them in your user folder instead.\n"
+        )
+    }
+}
+
+// Regular: a real installer (Windows .exe, Linux .deb, macOS .dmg). The data goes to the user's
+// data folder, which also keeps it safe when the game is updated or uninstalled.
+tasks.register<Exec>("packageInstaller") {
+    group = "distribution"
+    description = "Builds a native installer (exe on Windows, deb on Linux, dmg on macOS)."
+    dependsOn("preparePackageInput")
+
+    doFirst {
+        val outputDir = installerOutputDir.get().asFile
         outputDir.deleteRecursively()
 
-        val args = mutableListOf(
-            "jpackage",
-            "--type", "app-image",
-            "--name", appName,
-            "--app-version", jpackageVersion,
-            "--input", packageInputDir.get().asFile.absolutePath,
-            "--main-jar", tasks.shadowJar.get().archiveFileName.get(),
-            "--main-class", mainClassName,
-            "--dest", outputDir.absolutePath,
-            "--java-options", "-Dorg.lwjgl.librarypath=\$APPDIR/natives",
-            "--java-options", "-Djtalk.home=\$APPDIR/jtalk",
-        )
+        val type = when (targetOs) {
+            "windows" -> "exe"   // needs the WiX Toolset 3.x on PATH
+            "macos" -> "dmg"
+            else -> "deb"        // needs dpkg-deb and fakeroot
+        }
 
-        val iconFile = file("src/main/resources/icon.$iconExtension")
-        if (iconFile.exists()) {
-            args += listOf("--icon", iconFile.absolutePath)
+        val args = jpackageArgs(type, outputDir)
+        when (targetOs) {
+            "windows" -> args += listOf(
+                "--win-menu", "--win-shortcut", "--win-dir-chooser",
+                "--win-per-user-install",   // no admin prompt, installs to %LOCALAPPDATA%
+                "--win-upgrade-uuid", windowsUpgradeUuid,
+            )
+            "linux" -> args += listOf("--linux-shortcut", "--linux-menu-group", "Game")
         }
 
         commandLine(args)

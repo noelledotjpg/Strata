@@ -38,6 +38,7 @@ public class GameRenderer {
     private final PixelationFilter pixelation = new PixelationFilter();
     private final PlayerCamera playerCamera = new PlayerCamera();
     private final PlayerRenderer playerRenderer = new PlayerRenderer();
+    private final DebugRenderer debugRenderer = new DebugRenderer();
 
     private long lastFrameNanos = System.nanoTime();
 
@@ -62,6 +63,10 @@ public class GameRenderer {
 
     public SkyboxRenderer getSkyboxRenderer() {
         return this.skyboxRenderer;
+    }
+
+    public DebugRenderer getDebugRenderer() {
+        return this.debugRenderer;
     }
 
     public FloatBuffer getFogColor() {
@@ -180,10 +185,28 @@ public class GameRenderer {
             this.fogColor.clear();
             this.fogColor.put(new float[]{fc[0], fc[1], fc[2], 1.0F}).flip();
 
-            this.skyboxRenderer.render(eyeX, eyeY, eyeZ, cycle);
+            // The sky belongs to the player, not to the camera: in the freecam it stays centred on the player,
+            // so the camera can fly out and look at it up close (or from outside). Otherwise the camera is the centre.
+            boolean freecam = this.playerCamera.isFreecam();
+            final double skyX, skyY, skyZ;
+            if (freecam) {
+                skyX = player.prevX + (player.x - player.prevX) * cameraPartialTicks;
+                skyY = player.prevY + (player.y - player.prevY) * cameraPartialTicks;
+                skyZ = player.prevZ + (player.z - player.prevZ) * cameraPartialTicks;
+            } else {
+                skyX = eyeX;
+                skyY = eyeY;
+                skyZ = eyeZ;
+            }
+
+            // Away from the player the sky can be seen from outside, so it has to write and test depth,
+            // otherwise its far side is painted over its near side.
+            this.skyboxRenderer.setSolid(freecam);
+
+            this.skyboxRenderer.render(skyX, skyY, skyZ, cycle);
             // The sun and moon are drawn between the white (lower) and coloured (upper) cloud layers.
-            this.cloudRenderer.render(eyeX, eyeY, eyeZ, cycle,
-                    () -> this.skyboxRenderer.renderSunAndMoon(eyeX, eyeY, eyeZ, cycle));
+            this.cloudRenderer.render(skyX, skyY, skyZ, cycle,
+                    () -> this.skyboxRenderer.renderSunAndMoon(skyX, skyY, skyZ, cycle));
 
             // Distance fog at the edge of the render distance (the terrain and liquid shaders apply it themselves,
             // the fixed function fog is only switched on for the billboards).
@@ -210,6 +233,11 @@ public class GameRenderer {
             HitResult hitResult = this.game.getPlayerInteraction().getHitResult();
             if (hitResult != null && playing) {
                 levelRenderer.renderHit(hitResult);
+            }
+
+            // Debug overlays (the chunkborders and vectors commands), drawn in world space with the camera's matrices.
+            if (this.debugRenderer.isActive()) {
+                this.debugRenderer.render(this.game.getLevel(), player, eyeX, eyeY, eyeZ, cameraPartialTicks);
             }
 
             glDisable(GL_FOG);

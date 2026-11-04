@@ -105,6 +105,20 @@ final class Shoreline {
     private static final float BEACH_FLAT = 7.0f;
     private static final float BEACH_RIPPLE = 0.7f;
 
+    // Beaches that run further inland: on some stretches of beach coast the sand flat reaches this much
+    // further back (and slopes up to the land gently) instead of ending a few blocks from the water.
+    private static final float DEEP_BEACH_THRESHOLD = 0.20f;
+    private static final float DEEP_BEACH_REACH = 18.0f;
+
+    // ---- bays (see Bay) ----
+
+    private static final float BAY_SMOOTH = 8.0f;           // how rounded the bay's join with the coast is
+    private static final float BAY_WOBBLE = 3.5f;           // noise that bends the bay's outline, in blocks
+    private static final float BAY_BEACH_RANGE = 18.0f;     // the shore this close to the bay's rim is sandy
+    private static final float BAY_BEACH_SHARE = 0.90f;
+    private static final float BAY_DEEP_SHARE = 0.55f;      // bay beaches are wide, but not always as wide as the widest
+    private static final float BAY_CENTRE_CLEARANCE = MAIN_CENTRE_DEPTH + COAST_AMPLITUDE + 8.0f;
+
     // ---- eroded highlands ----
 
     private static final int HIGHLAND_LIFT = 12;
@@ -151,7 +165,10 @@ final class Shoreline {
     private final Fbm beachNoise;
     private final Fbm highlandNoise;
     private final Fbm erosionNoise;
+    private final Fbm bayNoise;
+    private final Fbm beachDepthNoise;
 
+    private Bay bay;
     private Capsule[] land = new Capsule[0];
     private float seaWallStart = SEA_WALL_START;
     private float seaWallWidth = SEA_WALL_WIDTH;
@@ -176,6 +193,10 @@ final class Shoreline {
         this.beachNoise = new Fbm(random, 3, 0.010f, 0.5f);
         this.highlandNoise = new Fbm(random, 4, 0.012f, 0.5f);
         this.erosionNoise = new Fbm(random, 3, 0.020f, 0.5f);
+
+        // Added last, so the noise above stays the same for every seed.
+        this.bayNoise = new Fbm(random, 3, 0.045f, 0.5f);
+        this.beachDepthNoise = new Fbm(random, 3, 0.008f, 0.5f);
     }
 
     /** Layered noise, -1..1: every octave has twice the frequency and persistence times the strength of the one before. */
@@ -442,6 +463,12 @@ final class Shoreline {
 
         List<Capsule> shapes = new ArrayList<>();
 
+        // Where the main island ended up, for the bay.
+        float mainX = lonelyX;
+        float mainZ = lonelyZ;
+        float mainScale = 1.0f;
+        int placed = 1;
+
         for (int count = islands; count > 1; count--) {
             float scale = 1.0f;
             float[][] centres = null;
@@ -503,6 +530,11 @@ final class Shoreline {
                     addIsland(shapes, plans[i], centres[i][0], centres[i][1], scale);
                 }
 
+                mainX = centres[0][0];
+                mainZ = centres[0][1];
+                mainScale = scale;
+                placed = count;
+
                 this.seaWallStart = MULTI_SEA_WALL_START;
                 this.seaWallWidth = MULTI_SEA_WALL_WIDTH;
 
@@ -515,6 +547,13 @@ final class Shoreline {
         }
 
         this.land = shapes.toArray(new Capsule[0]);
+
+        // The bay opens away from any satellites, and keeps clear of the map's middle where the player starts.
+        float[] neighbours = new float[placed - 1];
+        System.arraycopy(angles, 1, neighbours, 0, placed - 1);
+
+        this.bay = Bay.plan(random, plans[0].pieces, mainX, mainZ, mainScale,
+                neighbours, width * 0.5f, height * 0.5f, BAY_CENTRE_CLEARANCE);
     }
 
     /** True if the point (px, pz) is at least MAIN_CENTRE_DEPTH blocks inland of the main island placed at (cx, cz). */
@@ -598,6 +637,14 @@ final class Shoreline {
 
                 float landDistance = landDistance(this.land, px, pz);
 
+                // The bay is water cut out of the land, with a rounded join and a wobbly outline.
+                float bayDistance = Float.MAX_VALUE;
+
+                if (this.bay != null) {
+                    bayDistance = this.bay.signedDistance(px, pz) + this.bayNoise.get(x, z) * BAY_WOBBLE;
+                    landDistance = Bay.smoothMax(landDistance, -bayDistance, BAY_SMOOTH);
+                }
+
                 float edge = landDistance + coast
                         + smoothstep(clamp01((square - this.seaWallStart) / this.seaWallWidth))
                         * SEA_WALL_PUSH;
@@ -606,6 +653,21 @@ final class Shoreline {
                 float beach = smoothstep(clamp01(
                         (this.beachNoise.get(x, z) - BEACH_NOISE_START) / 0.30f
                 ));
+
+                // The shore around a bay is sheltered, so it is a beach, and a wide one.
+                float bayBeach = 0.0f;
+
+                if (this.bay != null) {
+                    bayBeach = smoothstep(clamp01(1.0f - Math.abs(bayDistance) / BAY_BEACH_RANGE));
+                    beach = Math.max(beach, bayBeach * BAY_BEACH_SHARE);
+                }
+
+                // On some beach coasts the sand flat reaches much further inland.
+                float deepBeach = beach * smoothstep(clamp01(
+                        (this.beachDepthNoise.get(x, z) - DEEP_BEACH_THRESHOLD) / 0.25f
+                ));
+                deepBeach = Math.max(deepBeach, bayBeach * BAY_DEEP_SHARE);
+                float beachReach = deepBeach * DEEP_BEACH_REACH;
 
                 // Beach coasts push the waterline outwards.
                 float oceanStart = OCEAN_START + beach * BEACH_FLAT;
@@ -635,9 +697,10 @@ final class Shoreline {
                 }
 
                 // The sand shelf.
-                float shelf = beach * smoothstep(clamp01(
-                        (edge - (OCEAN_START - 4.0f)) / 4.0f
-                ));
+                // A wide beach starts further inland and climbs back to the land over a longer, gentler slope.
+                float shelfStart = OCEAN_START - 4.0f - beachReach;
+                float shelfRamp = 4.0f + beachReach * 0.75f;
+                float shelf = beach * smoothstep(clamp01((edge - shelfStart) / shelfRamp));
 
                 if (shelf > 0.0f) {
                     float shelfHeight = SEA_LEVEL + 0.5f

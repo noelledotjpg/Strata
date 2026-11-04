@@ -39,6 +39,14 @@ public class SkyboxRenderer {
     // The current cycle reference, updated each frame before rendering.
     private DayNightCycle cycle;
 
+    // When true the sky writes and tests depth, so it can be looked at from outside (freecam) without its far side
+    // painting over its near side. Off normally: the camera is inside, and the sky is just a backdrop drawn first.
+    private boolean solid = false;
+
+    public void setSolid(boolean solid) {
+        this.solid = solid;
+    }
+
     /**
      * Draws only the sky dome. Sky colours come from the day-night cycle, so the mesh is rendered directly every frame
      * instead of cached in a display list.
@@ -48,7 +56,7 @@ public class SkyboxRenderer {
     public void render(double eyeX, double eyeY, double eyeZ, DayNightCycle cycle) {
         this.cycle = cycle;
 
-        setupRenderState();
+        setupRenderState(true);
 
         glPushMatrix();
         glTranslated(eyeX, eyeY, eyeZ);
@@ -62,7 +70,7 @@ public class SkyboxRenderer {
     public void renderSunAndMoon(double eyeX, double eyeY, double eyeZ, DayNightCycle cycle) {
         this.cycle = cycle;
 
-        setupRenderState();
+        setupRenderState(false);
 
         glPushMatrix();
         glTranslated(eyeX, eyeY, eyeZ);
@@ -281,15 +289,21 @@ public class SkyboxRenderer {
         return a + (b - a) * t;
     }
 
-    private void setupRenderState() {
+    // writeDepth: whether this pass writes depth when the sky is solid (the dome does, the sun and moon only test)
+    private void setupRenderState(boolean writeDepth) {
         glDisable(GL_CULL_FACE);
         glDisable(GL_FOG);
         glDisable(GL_ALPHA_TEST);
         glDisable(GL_TEXTURE_2D);
         glDisable(GL_BLEND);
 
-        glDisable(GL_DEPTH_TEST);
-        glDepthMask(false);
+        if (this.solid) {
+            glEnable(GL_DEPTH_TEST);
+            glDepthMask(writeDepth);
+        } else {
+            glDisable(GL_DEPTH_TEST);
+            glDepthMask(false);
+        }
 
         glShadeModel(GL_SMOOTH);
     }

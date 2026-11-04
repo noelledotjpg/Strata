@@ -28,7 +28,9 @@ public class FreecamCommand implements Command {
                 "  freecam on / off         - turn it on / off",
                 "  freecam speed <blocks/s> - fly speed (default "
                         + (int) PlayerCamera.DEFAULT_FREECAM_SPEED + ")",
-                "While it is on the player stands still; fly the camera with the movement keys.");
+                "While it is on the player stands still; fly the camera with the movement keys.",
+                "The sky (skybox, clouds, sun and moon) stays around the player, so you can fly out and look at it from outside.",
+                "It is 2000 blocks across: raise the speed to get there faster.");
     }
 
     @Override

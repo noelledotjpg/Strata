@@ -123,6 +123,10 @@ public class PlayerPhysics {
     private double flatForwardX, flatForwardZ;   // forward without pitch, normalized
     private double flatRightX, flatRightZ;
 
+    // ---- debug: read by the vector overlay (DebugRenderer), nothing in the physics uses them ----
+    private final double[] debugWishVelocity = new double[3];   // what the inputs ask for (direction * speed), blocks per second
+    private final double[] debugMovedVelocity = new double[3];  // how far the origin really moved in the last command, per second
+
     public PlayerPhysics(Level level) {
         this.level = level;
     }
@@ -133,6 +137,11 @@ public class PlayerPhysics {
     public boolean isOnGround()      { return this.onGround; }
     public int getWaterLevel()       { return this.waterLevel; }
     public LiquidTile getWaterType() { return this.waterType; }
+
+    /** what the inputs asked for in the last command (wish direction * wish speed), blocks per second. debug overlay only */
+    public double[] getWishVelocity()  { return this.debugWishVelocity; }
+    /** how far the origin really moved in the last command, divided by its length (blocks per second). debug overlay only */
+    public double[] getMovedVelocity() { return this.debugMovedVelocity; }
 
     public void teleport(double x, double y, double z) {
         this.origin[X] = x;
@@ -173,6 +182,19 @@ public class PlayerPhysics {
 
     /** Quake's PlayerMove: one command, frameTime seconds long */
     public void move(MoveCommand cmd, Mode mode, double frameTime) {
+        double startX = this.origin[X];
+        double startY = this.origin[Y];
+        double startZ = this.origin[Z];
+        this.debugWishVelocity[X] = this.debugWishVelocity[Y] = this.debugWishVelocity[Z] = 0.0;
+
+        playerMove(cmd, mode, frameTime);
+
+        this.debugMovedVelocity[X] = (this.origin[X] - startX) / frameTime;
+        this.debugMovedVelocity[Y] = (this.origin[Y] - startY) / frameTime;
+        this.debugMovedVelocity[Z] = (this.origin[Z] - startZ) / frameTime;
+    }
+
+    private void playerMove(MoveCommand cmd, Mode mode, double frameTime) {
         this.frameTime = frameTime;
 
         angleVectors(cmd.yaw, cmd.pitch);
@@ -569,6 +591,10 @@ public class PlayerPhysics {
         }
         wishSpeed *= 0.7;
 
+        for (int i = 0; i < 3; i++) {
+            this.debugWishVelocity[i] = wishDir[i] * wishSpeed;
+        }
+
         // water acceleration
         accelerate(wishDir, wishSpeed, WATER_ACCELERATE);
 
@@ -604,6 +630,10 @@ public class PlayerPhysics {
         if (wishSpeed > MAX_SPEED) {
             wishSpeed = MAX_SPEED;
         }
+
+        this.debugWishVelocity[X] = wishDir[X] * wishSpeed;
+        this.debugWishVelocity[Y] = 0.0;
+        this.debugWishVelocity[Z] = wishDir[Z] * wishSpeed;
 
         if (this.onGround) {
             this.velocity[Y] = 0;
@@ -855,6 +885,11 @@ public class PlayerPhysics {
             wishX = (this.flatForwardX * this.cmdForward + this.flatRightX * this.cmdSide) * scale;
             wishZ = (this.flatForwardZ * this.cmdForward + this.flatRightZ * this.cmdSide) * scale;
         }
+
+        // flySpeed is in blocks per tick, the overlay wants blocks per second
+        this.debugWishVelocity[X] = wishX * flySpeed / this.frameTime;
+        this.debugWishVelocity[Y] = this.cmdUp * flySpeed / this.frameTime;
+        this.debugWishVelocity[Z] = wishZ * flySpeed / this.frameTime;
 
         if (!collide) {
             // noclip

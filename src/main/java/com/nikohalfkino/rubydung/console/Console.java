@@ -40,6 +40,8 @@ public class Console {
         register(new FreecamCommand());
         register(new SingCommand());
         register(new LiquidCommand());
+        register(new VectorsCommand());
+        register(new ChunkBordersCommand());
 
         println("Type 'help' for a list of commands.");
     }
