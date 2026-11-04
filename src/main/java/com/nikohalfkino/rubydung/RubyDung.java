@@ -47,7 +47,7 @@ import static org.lwjgl.opengl.GL11.*;
 public class RubyDung implements Runnable {
 
     public static final String GAME_NAME = "Strata";
-    public static final String GAME_VERSION = "v0.2.0";
+    public static final String GAME_VERSION = "v0.2.1b";
 
     public static final String GAME_TITLE = GAME_NAME + " " + GAME_VERSION;
 
