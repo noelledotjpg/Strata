@@ -1,27 +1,31 @@
 package com.nikohalfkino.rubydung.player;
 
 import com.nikohalfkino.rubydung.level.Level;
+import com.nikohalfkino.rubydung.level.tiles.LiquidTile;
 import com.nikohalfkino.rubydung.phys.AABB;
 import com.nikohalfkino.rubydung.util.KeyBinding;
 import com.nikohalfkino.rubydung.util.KeyMap;
 
-import java.util.List;
-
 public class Player {
 
-    public static final double EYE_HEIGHT = 1.62D;
+    public static final double EYE_HEIGHT = PlayerPhysics.EYE_HEIGHT;
 
-    // highest ledge walked up without jumping (slabs are 0.5, full blocks 1.0)
-    private static final double STEP_HEIGHT = 0.6D;
+    /** length of one tick; the physics runs on this (Quake's frametime). must match the game's tick rate */
+    public static final double TICK_SECONDS = 1.0D / 60.0D;
 
     private final Level level;
 
+    /** all the movement: acceleration, friction, gravity, collision, stairs, swimming (see PlayerPhysics) */
+    private final PlayerPhysics physics;
+    private final MoveCommand command = new MoveCommand();
+
+    // eye position, what the camera uses. the physics origin is the middle of the feet
     public double x, y, z;
     public double prevX, prevY, prevZ;
+
+    // velocity in blocks per tick (kept for code that reads it, the physics itself works in blocks per second)
     public double motionX, motionY, motionZ;
     public float xRotation, yRotation;
-
-    private boolean onGround;
 
     public AABB boundingBox;
 
@@ -42,31 +46,23 @@ public class Player {
     private static final float BODY_TURN_PER_TICK = 40.0F;
     private static final double BODY_MOVE_EPSILON_SQ = 1.0E-5D;
 
-    private static final float BASE_FLY_SPEED = 0.2F;
-
-    private static final float BASE_GROUND_SPEED = 0.02F;
-    private static final float BASE_AIR_SPEED = 0.005F;
-
     public float flySpeedMultiplier = 1.0F;
 
     public Player(Level level) {
         this.level = level;
+        this.physics = new PlayerPhysics(level);
 
         resetPosition();
     }
 
-    private void setPosition(float x, float y, float z) {
-        this.x = x;
-        this.y = y;
-        this.z = z;
+    /** sets the eye position */
+    private void setPosition(double x, double y, double z) {
+        this.physics.teleport(x, y - EYE_HEIGHT, z);
+        syncFromPhysics();
 
-        float width = 0.3F;
-        float height = 1.8F;
-        float feetY = y - (float) EYE_HEIGHT;
-
-        this.boundingBox = new AABB(x - width, feetY,
-                z - width, x + width,
-                feetY + height, z + width);
+        this.prevX = this.x;
+        this.prevY = this.y;
+        this.prevZ = this.z;
     }
 
     // random columns tried for a dry spawn before giving up and taking the first one
@@ -93,8 +89,8 @@ public class Player {
             }
         }
 
-        float y = (bestGround < 0 ? 0 : bestGround) + 1 + (float) EYE_HEIGHT + 0.4f;
-        setPosition(bestX + 0.5F, y, bestZ + 0.5F);
+        double y = (bestGround < 0 ? 0 : bestGround) + 1 + EYE_HEIGHT + 0.4D;
+        setPosition(bestX + 0.5D, y, bestZ + 0.5D);
     }
 
     /** y of the highest solid cell in the column, -1 if there is none */
@@ -119,16 +115,12 @@ public class Player {
     }
 
     public void setPositionAndRotation(double x, double y, double z, float yRotation, float xRotation) {
-        setPosition((float) x, (float) y, (float) z);
+        setPosition(x, y, z);
 
         this.yRotation = yRotation;
         this.xRotation = xRotation;
         this.bodyYaw = yRotation;
         this.prevBodyYaw = yRotation;
-
-        this.prevX = this.x;
-        this.prevY = this.y;
-        this.prevZ = this.z;
     }
 
     public void turn(float x, float y) {
@@ -147,6 +139,15 @@ public class Player {
         }
         this.flySpeedMultiplier = Math.max(0.1F, Math.min(20.0F, this.flySpeedMultiplier));
     }
+
+    // ---- state the physics knows, for HUD / sounds / camera effects ----
+
+    public boolean isOnGround()          { return this.physics.isOnGround(); }
+    /** 0 = dry, 1 = feet, 2 = waist, 3 = head under */
+    public int getWaterLevel()           { return this.physics.getWaterLevel(); }
+    /** the liquid at the feet, null when not in one */
+    public LiquidTile getLiquid()        { return this.physics.getWaterType(); }
+    public PlayerPhysics getPhysics()    { return this.physics; }
 
     public void tick() {
         tickMovement();
@@ -205,221 +206,74 @@ public class Player {
             this.flySpeedMultiplier = 1.0F;
         }
 
-        float currentFlySpeed = BASE_FLY_SPEED * this.flySpeedMultiplier;
-        float forward = 0.0F;
-        float vertical = 0.0F;
+        // keys -> usercmd
+        MoveCommand cmd = this.command;
+        cmd.clearMovement();
 
-        if (KeyBinding.FORWARD.isDown() || KeyMap.isDown(KeyMap.UP)) {
-            forward--;
-        }
-        if (KeyBinding.BACK.isDown() || KeyMap.isDown(KeyMap.DOWN)) {
-            forward++;
-        }
-        if (KeyBinding.LEFT.isDown() || KeyMap.isDown(KeyMap.LEFT)) {
-            vertical--;
-        }
-        if (KeyBinding.RIGHT.isDown() || KeyMap.isDown(KeyMap.RIGHT)) {
-            vertical++;
-        }
-
-        boolean ascendHeld = KeyBinding.JUMP.isDown() || KeyMap.isDown(KeyMap.LWIN) || KeyMap.isDown(KeyMap.RWIN);
-        boolean descendHeld = KeyBinding.SNEAK.isDown() || KeyMap.isDown(KeyMap.RSHIFT);
-
-        if (this.controlsLocked) {
-            forward = 0.0F;
-            vertical = 0.0F;
-            ascendHeld = false;
-            descendHeld = false;
-        }
-
-        if (this.noClip) {
-            flyRelative(vertical, forward, currentFlySpeed);
-
-            float ySpeed = 0.0F;
-            if (ascendHeld) {
-                ySpeed += currentFlySpeed;
+        if (!this.controlsLocked) {
+            if (KeyBinding.FORWARD.isDown() || KeyMap.isDown(KeyMap.UP)) {
+                cmd.forward++;
             }
-            if (descendHeld) {
-                ySpeed -= currentFlySpeed;
+            if (KeyBinding.BACK.isDown() || KeyMap.isDown(KeyMap.DOWN)) {
+                cmd.forward--;
             }
-            this.motionY = ySpeed;
-
-            move(this.motionX, this.motionY, this.motionZ);
-            return;
-        }
-
-        if (this.flying) {
-            moveRelative(vertical, forward, currentFlySpeed * 0.2F);
-
-            if (ascendHeld) {
-                this.motionY += currentFlySpeed * 0.2F;
+            if (KeyBinding.LEFT.isDown() || KeyMap.isDown(KeyMap.LEFT)) {
+                cmd.side--;
             }
-            if (descendHeld) {
-                this.motionY -= currentFlySpeed * 0.2F;
+            if (KeyBinding.RIGHT.isDown() || KeyMap.isDown(KeyMap.RIGHT)) {
+                cmd.side++;
             }
 
-            move(this.motionX, this.motionY, this.motionZ);
+            boolean ascendHeld = KeyBinding.JUMP.isDown() || KeyMap.isDown(KeyMap.LWIN) || KeyMap.isDown(KeyMap.RWIN);
+            boolean descendHeld = KeyBinding.SNEAK.isDown() || KeyMap.isDown(KeyMap.RSHIFT);
 
-            this.motionX *= 0.8F;
-            this.motionY *= 0.8F;
-            this.motionZ *= 0.8F;
-            return;
-        }
-
-        if (ascendHeld) {
-            if (this.onGround) {
-                this.motionY = 0.14F;
+            // walking: the jump key is BUTTON_JUMP (jump, or swim up). flying / noclip: it is "up"
+            cmd.jump = ascendHeld;
+            if (this.noClip || this.flying) {
+                cmd.up = (ascendHeld ? 1.0F : 0.0F) - (descendHeld ? 1.0F : 0.0F);
+            } else if (descendHeld) {
+                cmd.up = -1.0F;   // swim down (+movedown), ignored on land
             }
         }
 
-        float walkSpeed = this.onGround ? BASE_GROUND_SPEED : BASE_AIR_SPEED;
+        cmd.yaw = this.yRotation;
+        cmd.pitch = this.xRotation;
 
-        moveRelative(vertical, forward, walkSpeed);
+        PlayerPhysics.Mode mode = this.noClip ? PlayerPhysics.Mode.NOCLIP
+                : this.flying ? PlayerPhysics.Mode.FLY
+                : PlayerPhysics.Mode.WALK;
 
-        this.motionY -= 0.006D;
+        this.physics.spectatorSpeedScale = this.flySpeedMultiplier;
+        this.physics.move(cmd, mode, TICK_SECONDS);
 
-        move(this.motionX, this.motionY, this.motionZ);
-
-        this.motionX *= 0.91F;
-        this.motionY *= 0.98F;
-        this.motionZ *= 0.91F;
-
-        if (this.onGround) {
-            this.motionX *= 0.8F;
-            this.motionZ *= 0.8F;
-        }
+        syncFromPhysics();
     }
 
+    private void syncFromPhysics() {
+        double[] origin = this.physics.origin;
+        double[] velocity = this.physics.velocity;
+
+        this.x = origin[PlayerPhysics.X];
+        this.y = origin[PlayerPhysics.Y] + EYE_HEIGHT;
+        this.z = origin[PlayerPhysics.Z];
+
+        this.motionX = velocity[PlayerPhysics.X] * TICK_SECONDS;
+        this.motionY = velocity[PlayerPhysics.Y] * TICK_SECONDS;
+        this.motionZ = velocity[PlayerPhysics.Z] * TICK_SECONDS;
+
+        this.boundingBox = this.physics.buildBox();
+    }
+
+    /** moves by a fixed amount with collision (or straight through in noclip), without touching the velocity */
     public void move(double x, double y, double z) {
         if (this.noClip) {
-            this.boundingBox.move(x, y, z);
-            this.onGround = false;
-
-            this.x = (this.boundingBox.minX + this.boundingBox.maxX) / 2.0D;
-            this.y = this.boundingBox.minY + EYE_HEIGHT;
-            this.z = (this.boundingBox.minZ + this.boundingBox.maxZ) / 2.0D;
-            return;
+            double[] origin = this.physics.origin;
+            origin[PlayerPhysics.X] += x;
+            origin[PlayerPhysics.Y] += y;
+            origin[PlayerPhysics.Z] += z;
+        } else {
+            this.physics.moveBy(x, y, z);
         }
-
-        double prevX = x;
-        double prevY = y;
-        double prevZ = z;
-
-        boolean wasOnGround = this.onGround;
-        AABB startBox = this.boundingBox.clone();
-
-        List<AABB> aABBs = this.level.getCubes(this.boundingBox.expand(x, y, z));
-
-        for (AABB abb : aABBs) {
-            y = abb.clipYCollide(this.boundingBox, y);
-        }
-        this.boundingBox.move(0.0F, y, 0.0F);
-
-        for (AABB aABB : aABBs) {
-            x = aABB.clipXCollide(this.boundingBox, x);
-        }
-        this.boundingBox.move(x, 0.0F, 0.0F);
-
-        for (AABB aABB : aABBs) {
-            z = aABB.clipZCollide(this.boundingBox, z);
-        }
-        this.boundingBox.move(0.0F, 0.0F, z);
-
-        // Blocked sideways while standing on the ground (or just having landed): try the same
-        // horizontal move again from STEP_HEIGHT higher and, if that gets further, drop back down
-        // onto whatever is there. This is what lets the player walk up slabs without jumping.
-        boolean stepped = false;
-        boolean landed = prevY < 0.0D && prevY != y;
-        boolean blocked = prevX != x || prevZ != z;
-        if (blocked && (wasOnGround || landed) && !this.flying && y <= 0.0D) {
-            double stepX = prevX;
-            double stepZ = prevZ;
-            AABB stepBox = startBox.clone();
-            List<AABB> stepCubes = this.level.getCubes(startBox.expand(prevX, STEP_HEIGHT, prevZ));
-
-            double up = STEP_HEIGHT;
-            for (AABB abb : stepCubes) {
-                up = abb.clipYCollide(stepBox, up);
-            }
-            stepBox.move(0.0D, up, 0.0D);
-
-            for (AABB abb : stepCubes) {
-                stepX = abb.clipXCollide(stepBox, stepX);
-            }
-            stepBox.move(stepX, 0.0D, 0.0D);
-
-            for (AABB abb : stepCubes) {
-                stepZ = abb.clipZCollide(stepBox, stepZ);
-            }
-            stepBox.move(0.0D, 0.0D, stepZ);
-
-            // Back down by what was climbed, so the player ends up standing on the ledge.
-            double down = -up;
-            for (AABB abb : stepCubes) {
-                down = abb.clipYCollide(stepBox, down);
-            }
-            stepBox.move(0.0D, down, 0.0D);
-
-            double normalDist = x * x + z * z;
-            double stepDist = stepX * stepX + stepZ * stepZ;
-            double climbed = stepBox.minY - startBox.minY;
-
-            if (stepDist > normalDist + 1.0E-9D && climbed > 1.0E-6D) {
-                this.boundingBox = stepBox;
-                x = stepX;
-                z = stepZ;
-                y = climbed;
-                stepped = true;
-                this.motionY = 0.0D;
-            }
-        }
-
-        this.onGround = stepped || (prevY != y && prevY < 0.0F);
-
-        if (prevX != x) this.motionX = 0.0D;
-        if (prevY != y && !stepped) this.motionY = 0.0D;
-        if (prevZ != z) this.motionZ = 0.0D;
-
-        this.x = (this.boundingBox.minX + this.boundingBox.maxX) / 2.0D;
-        this.y = this.boundingBox.minY + EYE_HEIGHT;
-        this.z = (this.boundingBox.minZ + this.boundingBox.maxZ) / 2.0D;
-    }
-
-
-    private void moveRelative(float x, float z, float speed) {
-        float distance = x * x + z * z;
-
-        if (distance < 0.01F)
-            return;
-
-        distance = speed / (float) Math.sqrt(distance);
-        x *= distance;
-        z *= distance;
-
-        double sin = Math.sin(Math.toRadians(this.yRotation));
-        double cos = Math.cos(Math.toRadians(this.yRotation));
-
-        this.motionX += x * cos - z * sin;
-        this.motionZ += z * cos + x * sin;
-    }
-
-    private void flyRelative(float x, float z, float speed) {
-        float distance = x * x + z * z;
-
-        if (distance < 0.01F) {
-            this.motionX = 0.0D;
-            this.motionZ = 0.0D;
-            return;
-        }
-
-        distance = speed / (float) Math.sqrt(distance);
-        x *= distance;
-        z *= distance;
-
-        double sin = Math.sin(Math.toRadians(this.yRotation));
-        double cos = Math.cos(Math.toRadians(this.yRotation));
-
-        this.motionX = x * cos - z * sin;
-        this.motionZ = z * cos + x * sin;
+        syncFromPhysics();
     }
 }

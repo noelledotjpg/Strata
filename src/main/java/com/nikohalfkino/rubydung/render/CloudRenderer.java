@@ -16,8 +16,16 @@ public class CloudRenderer {
     private static final int GRID_SEGMENTS = 144;
     private static final float CELL_SIZE = (PLANE_HALF_SIZE * 2.0F) / GRID_SEGMENTS;
 
+    // world units covered by one repeat of the cloud texture
+    private static final float UV_SCALE = TILE_WORLD_SIZE * 4.0F;
+
     private static final float FADE_START_FRACTION = 0.3F;
-    private static final float DRIFT_UNITS_PER_MS = 0.00002F / 2;
+
+    // how many texture repeats the upper layer scrolls per millisecond (one full repeat every 100 s)
+    private static final double DRIFT_TILES_PER_MS = 0.00002 / 2;
+
+    // the lower layer scrolls slower than the upper one
+    private static final double LOWER_SPEED_FACTOR = 0.7;
 
     public static final float HEIGHT_OFFSET = 180.0F;
 
@@ -34,9 +42,22 @@ public class CloudRenderer {
 
     private final long driftStartNanos = System.nanoTime();
 
+    // radial edge fade (1 = opaque, 0 = invisible) for every grid vertex; the grid is centred on the eye, so this never changes
+    private final float[][] edgeAlpha = new float[GRID_SEGMENTS + 1][GRID_SEGMENTS + 1];
+
     private int textureId = -1;
-    private int cloudListLower = -1;
-    private int cloudListUpper = -1;
+
+    public CloudRenderer() {
+        for (int gx = 0; gx <= GRID_SEGMENTS; gx++) {
+            for (int gz = 0; gz <= GRID_SEGMENTS; gz++) {
+                float x = -PLANE_HALF_SIZE + gx * CELL_SIZE;
+                float z = -PLANE_HALF_SIZE + gz * CELL_SIZE;
+                float radiusFraction = (float) Math.sqrt(x * x + z * z) / PLANE_HALF_SIZE;
+                float fade = ease(clamp01((radiusFraction - FADE_START_FRACTION) / (1.0F - FADE_START_FRACTION)));
+                this.edgeAlpha[gx][gz] = 1.0F - fade;
+            }
+        }
+    }
 
     private static float ease(float t) {
         float smooth = t * t * (3.0F - 2.0F * t);
@@ -50,60 +71,44 @@ public class CloudRenderer {
     }
 
     public void render(double eyeX, double eyeY, double eyeZ, DayNightCycle cycle) {
-        renderLayers(eyeX, eyeY, eyeZ, cycle);
+        renderLayers(eyeX, eyeY, eyeZ, cycle, null);
     }
 
-    public void renderLayers(double eyeX, double eyeY, double eyeZ, DayNightCycle cycle) {
+    /**
+     * @param betweenLayers run after the lower (white) layer and before the upper (coloured) one, with the GL state
+     *                      restored to normal; use it to draw the sun and moon between the two layers. May be null.
+     */
+    public void render(double eyeX, double eyeY, double eyeZ, DayNightCycle cycle, Runnable betweenLayers) {
+        renderLayers(eyeX, eyeY, eyeZ, cycle, betweenLayers);
+    }
+
+    public void renderLayers(double eyeX, double eyeY, double eyeZ, DayNightCycle cycle, Runnable betweenLayers) {
         if (textureId == -1) {
             textureId = Textures.loadCloudTexture(CloudTextureGenerator.generate(1024, 42L));
         }
 
-        if (cloudListLower == -1) {
-            cloudListLower = buildMeshCustomTint(LOWER_ALPHA);
-        }
-        if (cloudListUpper == -1) {
-            cloudListUpper = buildMeshCustomTint(UPPER_ALPHA);
-        }
-
+        // Each layer wraps on its own full texture repeat, so both loop seamlessly.
+        // (Wrapping one shared value and scaling it per layer made the slower layer jump back when the shared value wrapped.)
         double elapsedMs = (System.nanoTime() - driftStartNanos) / 1_000_000.0;
-        float drift = (float) (elapsedMs * (double) DRIFT_UNITS_PER_MS % 1.0);
+        float upperShift = (float) ((elapsedMs * DRIFT_TILES_PER_MS) % 1.0);
+        float lowerShift = (float) ((elapsedMs * DRIFT_TILES_PER_MS * LOWER_SPEED_FACTOR) % 1.0);
 
         float[] cloudColor = cycle.getCloudColor();
 
         setupRenderState();
         Textures.bind(textureId);
 
-        glPushMatrix();
-        glTranslated(eyeX, eyeY + HEIGHT_OFFSET - LAYER_GAP, eyeZ);
+        drawLayer(eyeX, eyeY + HEIGHT_OFFSET - LAYER_GAP, eyeZ, LOWER_TINT, cloudColor, LOWER_ALPHA, lowerShift);
 
-        glMatrixMode(GL_TEXTURE);
-        glPushMatrix();
-        glTranslatef(drift * 0.7F, 0.0F, 0.0F);
-        glMatrixMode(GL_MODELVIEW);
+        if (betweenLayers != null) {
+            // The callback draws with its own GL state, so hand it a clean one and set the cloud state up again afterwards.
+            cleanupRenderState();
+            betweenLayers.run();
+            setupRenderState();
+            Textures.bind(textureId);
+        }
 
-        setLayerTint(LOWER_TINT, cloudColor);
-        glCallList(cloudListLower);
-
-        glMatrixMode(GL_TEXTURE);
-        glPopMatrix();
-        glMatrixMode(GL_MODELVIEW);
-        glPopMatrix();
-
-        glPushMatrix();
-        glTranslated(eyeX, eyeY + HEIGHT_OFFSET + LAYER_GAP, eyeZ);
-
-        glMatrixMode(GL_TEXTURE);
-        glPushMatrix();
-        glTranslatef(drift, 0.0F, 0.0F);
-        glMatrixMode(GL_MODELVIEW);
-
-        setLayerTint(UPPER_TINT, cloudColor);
-        glCallList(cloudListUpper);
-
-        glMatrixMode(GL_TEXTURE);
-        glPopMatrix();
-        glMatrixMode(GL_MODELVIEW);
-        glPopMatrix();
+        drawLayer(eyeX, eyeY + HEIGHT_OFFSET + LAYER_GAP, eyeZ, UPPER_TINT, cloudColor, UPPER_ALPHA, upperShift);
 
         cleanupRenderState();
     }
@@ -119,45 +124,37 @@ public class CloudRenderer {
         glTexEnv(GL_TEXTURE_ENV, GL_TEXTURE_ENV_COLOR, this.tintBuffer);
     }
 
-    private int buildMeshCustomTint(float alphaMul) {
-        int list = glGenLists(1);
-        glNewList(list, GL_COMPILE);
-        tessellator.init();
+    // The drift lives in the mesh: the plane stays centred on the eye (so the edge fade never moves),
+    // and the texture coordinates of its vertices are shifted every frame.
+    private void drawLayer(double x, double y, double z, float[] layerTint, float[] cloudColor, float alphaMul, float shift) {
+        glPushMatrix();
+        glTranslated(x, y, z);
+
+        setLayerTint(layerTint, cloudColor);
 
         for (int gx = 0; gx < GRID_SEGMENTS; gx++) {
-            for (int gz = 0; gz < GRID_SEGMENTS; gz++) {
-                float minX = -PLANE_HALF_SIZE + gx * CELL_SIZE;
-                float maxX = minX + CELL_SIZE;
-                float minZ = -PLANE_HALF_SIZE + gz * CELL_SIZE;
-                float maxZ = minZ + CELL_SIZE;
+            float x0 = -PLANE_HALF_SIZE + gx * CELL_SIZE;
+            float x1 = x0 + CELL_SIZE;
 
-                addCellCustomTint(minX, maxX, minZ, maxZ, alphaMul);
+            tessellator.init(GL_TRIANGLE_STRIP);
+
+            for (int gz = 0; gz <= GRID_SEGMENTS; gz++) {
+                float vz = -PLANE_HALF_SIZE + gz * CELL_SIZE;
+
+                addVertex(x0, vz, this.edgeAlpha[gx][gz] * alphaMul, shift);
+                addVertex(x1, vz, this.edgeAlpha[gx + 1][gz] * alphaMul, shift);
             }
+
+            tessellator.flush();
         }
 
-        tessellator.flush();
-        glEndList();
-        return list;
+        glPopMatrix();
     }
 
-    private void addCellCustomTint(float minX, float maxX, float minZ, float maxZ, float alphaMul) {
-        addVertexCustomTint(minX, minZ, alphaMul);
-        addVertexCustomTint(minX, maxZ, alphaMul);
-        addVertexCustomTint(maxX, maxZ, alphaMul);
-        addVertexCustomTint(maxX, minZ, alphaMul);
-    }
-
-    private void addVertexCustomTint(float x, float z, float alphaMul) {
-        float radiusFraction = (float) Math.sqrt(x * x + z * z) / PLANE_HALF_SIZE;
-
-        float fade = ease(clamp01((radiusFraction - FADE_START_FRACTION) / (1.0F - FADE_START_FRACTION)));
-        float alpha = (1.0F - fade) * alphaMul;
-
-        float scale = TILE_WORLD_SIZE * 4.0F;
-
+    private void addVertex(float x, float z, float alpha, float shift) {
         // RGB is white here: the tint is applied at draw time via the texture environment colour.
         tessellator.color(1.0F, 1.0F, 1.0F, alpha);
-        tessellator.texture(x / scale, z / scale);
+        tessellator.texture(x / UV_SCALE + shift, z / UV_SCALE);
         tessellator.vertex(x, 0, z);
     }
 

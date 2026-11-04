@@ -189,7 +189,9 @@ public class ScreenshotManager {
             double eyeZ = player.prevZ + (player.z - player.prevZ) * 1.0F;
 
             this.gameRenderer.getSkyboxRenderer().render(eyeX, eyeY, eyeZ, this.game.getDayNightCycle());
-            this.gameRenderer.getCloudRenderer().render(eyeX, eyeY, eyeZ, this.game.getDayNightCycle());
+            // The sun and moon are drawn between the white (lower) and coloured (upper) cloud layers.
+            this.gameRenderer.getCloudRenderer().render(eyeX, eyeY, eyeZ, this.game.getDayNightCycle(),
+                    () -> this.gameRenderer.getSkyboxRenderer().renderSunAndMoon(eyeX, eyeY, eyeZ, this.game.getDayNightCycle()));
 
             glEnable(GL_FOG);
             glFogi(GL_FOG_MODE, GL_LINEAR);

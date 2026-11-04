@@ -124,6 +124,9 @@ public class LiquidTile extends WrappedTile {
     // gameplay
     private float viscosity = 0.6F;
 
+    // a big enough body of this liquid is endless: see LiquidSimulator
+    private boolean infinite = false;
+
     /** the texture is textures/block/liquid/NAME.png */
     public LiquidTile(String name) {
         this(name, TEXTURE_FOLDER + name);
@@ -188,6 +191,9 @@ public class LiquidTile extends WrappedTile {
 
     public LiquidTile setViscosity(float v) { this.viscosity = v; return this; }
 
+    /** a body of this liquid that is big enough (LiquidSimulator.getInfiniteBodySize) never runs dry and absorbs extra liquid */
+    public LiquidTile setInfinite(boolean infinite) { this.infinite = infinite; return this; }
+
     // -------------------------------------------------------------------------
     // getters
 
@@ -203,6 +209,7 @@ public class LiquidTile extends WrappedTile {
     public float getFlowSpeed()     { return flowSpeed; }
     public float getWaveHeight()    { return waveHeight; }
     public float getViscosity()     { return viscosity; }
+    public boolean isInfinite()     { return infinite; }
     public int   getSheetColumns()  { return sheetColumns; }
     public int   getSheetRows()     { return sheetRows; }
     public int   getLiquidIndex()   { return liquidIndex; }

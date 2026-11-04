@@ -181,7 +181,9 @@ public class GameRenderer {
             this.fogColor.put(new float[]{fc[0], fc[1], fc[2], 1.0F}).flip();
 
             this.skyboxRenderer.render(eyeX, eyeY, eyeZ, cycle);
-            this.cloudRenderer.render(eyeX, eyeY, eyeZ, cycle);
+            // The sun and moon are drawn between the white (lower) and coloured (upper) cloud layers.
+            this.cloudRenderer.render(eyeX, eyeY, eyeZ, cycle,
+                    () -> this.skyboxRenderer.renderSunAndMoon(eyeX, eyeY, eyeZ, cycle));
 
             // Distance fog at the edge of the render distance (the terrain and liquid shaders apply it themselves,
             // the fixed function fog is only switched on for the billboards).

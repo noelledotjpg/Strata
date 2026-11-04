@@ -98,6 +98,7 @@ public final class TileRegistry {
                     .setFlowSpeed(1.0F)
                     .setWaveHeight(0.03F)
                     .setViscosity(0.6F)
+                    .setInfinite(true)
                     // what blocks look like under water, shallow to deep (the old hard coded palette of TerrainShader)
                     .setDepthPalette(
                             new float[]{0.38F, 0.91F, 1.00F},
