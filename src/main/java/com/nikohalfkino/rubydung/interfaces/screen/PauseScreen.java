@@ -9,6 +9,8 @@ import com.nikohalfkino.rubydung.interfaces.widget.Button;
 import com.nikohalfkino.rubydung.interfaces.widget.Column;
 import com.nikohalfkino.rubydung.interfaces.widget.Label;
 import com.nikohalfkino.rubydung.level.Level;
+import com.nikohalfkino.rubydung.net.Multiplayer;
+import com.nikohalfkino.rubydung.net.Protocol;
 import com.nikohalfkino.rubydung.render.Font;
 
 
@@ -66,6 +68,14 @@ public class PauseScreen extends FramePanelScreen {
                 .onClick(() -> {
                     this.game.saveLevel();
                     this.saveMessageTicksRemaining = SAVED_MESSAGE_TICKS;
+                }));
+
+        // Open to LAN: lets other players on the network join the world being played.
+        this.menu.add(new Button("Open to LAN", BUTTON_WIDTH, BUTTON_HEIGHT, true)
+                .onClick(() -> {
+                    String error = Multiplayer.hostLan(this.game, Protocol.DEFAULT_PORT);
+                    this.game.getChatLog().notice(error != null ? error : "The world is open to LAN.");
+                    this.game.closeScreen();
                 }));
 
         // Quit (to the title screen) lives in the bottom-right corner of the frame.

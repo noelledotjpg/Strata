@@ -20,21 +20,21 @@ import static org.lwjgl.opengl.GL11.*;
  */
 public final class PlayerRenderer {
 
-    public static final String SHEET_RESOURCE = "/assets/rubydung/textures/player/idle.png";
+    public static final String SHEET_RESOURCE = "/assets/rubydung/textures/player/hakumo_idle.png";
 
-    public static final int FRAME_WIDTH = 32;
-    public static final int FRAME_HEIGHT = 48;
+    public static final int FRAME_WIDTH = 64;
+    public static final int FRAME_HEIGHT = 96;
     private static final int ANGLES = 8;
 
     // same pixel density as the terrain and billboard tiles
-    private static final int PIXELS_PER_BLOCK = 16;
+    private static final int PIXELS_PER_BLOCK = 40;
 
     private int texture = 0;
     private boolean loadFailed = false;
     private int frames = ANGLES;
 
     public void render(Level level, Player player, PlayerCamera camera, float partialTicks) {
-        if (!camera.isPlayerVisible() || !ensureTexture()) {
+        if (!camera.isPlayerVisible()) {
             return;
         }
 
@@ -42,7 +42,20 @@ public final class PlayerRenderer {
         double z = player.prevZ + (player.z - player.prevZ) * partialTicks;
         double feetY = player.prevY + (player.y - player.prevY) * partialTicks - Player.EYE_HEIGHT;
 
-        int frame = frameFor(player.getBodyYaw(partialTicks), camera.getX() - x, camera.getZ() - z);
+        draw(level, x, feetY, z, player.getBodyYaw(partialTicks), camera);
+    }
+
+    /** another player of a multiplayer game: always drawn, from its own (already smoothed) position */
+    public void renderRemote(Level level, double x, double feetY, double z, float bodyYaw, PlayerCamera camera) {
+        draw(level, x, feetY, z, bodyYaw, camera);
+    }
+
+    private void draw(Level level, double x, double feetY, double z, float bodyYaw, PlayerCamera camera) {
+        if (!ensureTexture()) {
+            return;
+        }
+
+        int frame = frameFor(bodyYaw, camera.getX() - x, camera.getZ() - z);
 
         // Lit like a billboard tile standing in the same spot.
         int cellX = (int) Math.floor(x);

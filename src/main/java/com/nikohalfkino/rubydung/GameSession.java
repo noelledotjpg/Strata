@@ -8,6 +8,7 @@ import com.nikohalfkino.rubydung.level.LevelIO;
 import com.nikohalfkino.rubydung.level.LevelRenderer;
 import com.nikohalfkino.rubydung.level.tiles.Tile;
 import com.nikohalfkino.rubydung.level.WorldManager;
+import com.nikohalfkino.rubydung.net.Multiplayer;
 import com.nikohalfkino.rubydung.level.generation.LevelGenerator;
 import com.nikohalfkino.rubydung.level.generation.WorldGenStatus;
 import com.nikohalfkino.rubydung.util.SaveQueue;
@@ -211,7 +212,34 @@ public class GameSession {
     }
 
     /** drops the world, the caller saves first */
+    // multiplayer client: the loading screen that is open while the world downloads
+    private LoadingScreen networkLoading;
+
+    /** a joined game starts: the old world goes, the loading screen opens and shows the download */
+    public void beginNetworkWorld() {
+        SaveQueue.flush();
+        leaveWorld();
+        WorldGenStatus.set("Connecting...");
+        Tile.getTiles();
+        this.networkLoading = new LoadingScreen(this.game);
+        this.game.openScreen(this.networkLoading);
+    }
+
+    /** main thread: the world from the server is built, play it (it is never saved) */
+    public void finishNetworkWorld(Level built) {
+        LoadingScreen screen = this.networkLoading;
+        this.networkLoading = null;
+        if (screen == null) {
+            screen = new LoadingScreen(this.game);
+            this.game.openScreen(screen);
+        }
+        finishEnteringWorld(built, screen, false);
+    }
+
     public void leaveWorld() {
+        // a LAN server would be left holding a world that is gone
+        Multiplayer.worldLeft();
+
         if (this.levelRenderer != null) {
             this.levelRenderer.dispose();
         }

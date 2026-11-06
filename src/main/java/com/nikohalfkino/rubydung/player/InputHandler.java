@@ -1,6 +1,7 @@
 package com.nikohalfkino.rubydung.player;
 
 import com.nikohalfkino.rubydung.RubyDung;
+import com.nikohalfkino.rubydung.net.Multiplayer;
 import com.nikohalfkino.rubydung.console.Console;
 import com.nikohalfkino.rubydung.interfaces.hud.HandHud;
 import com.nikohalfkino.rubydung.interfaces.screen.ChatScreen;
@@ -159,7 +160,7 @@ public class InputHandler {
                 HandHud.swingCurrent(HandHud.Action.INTERACT);
             }
             int[] door = this.game.getPlayerInteraction().getTargetedDoorOrigin();
-            if (door != null) {
+            if (door != null && !Multiplayer.isActive()) {
                 this.game.openScreen(new DimensionalDoorScreen(this.game, door[0], door[1], door[2]));
             }
         } else if (key == KeyBinding.KNOCK.getKey()) {

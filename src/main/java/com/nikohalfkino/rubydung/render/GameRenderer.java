@@ -1,6 +1,7 @@
 package com.nikohalfkino.rubydung.render;
 
 import com.nikohalfkino.rubydung.level.Chunk;
+import com.nikohalfkino.rubydung.net.Multiplayer;
 import com.nikohalfkino.rubydung.level.DayNightCycle;
 import com.nikohalfkino.rubydung.player.HitResult;
 import com.nikohalfkino.rubydung.RubyDung;
@@ -148,7 +149,8 @@ public class GameRenderer {
             long now = System.nanoTime();
             float frameSeconds = Math.min((now - this.lastFrameNanos) * 1.0E-9F, 0.25F);
             this.lastFrameNanos = now;
-            if (this.game.getCurrentScreen() == null) {
+            // (a joined player doesn't simulate them, the server sends what they did)
+            if (this.game.getCurrentScreen() == null && !Multiplayer.isClient()) {
                 this.game.getLevel().getLiquids().update(frameSeconds);
             }
             lap("liquid-sim");
@@ -239,6 +241,7 @@ public class GameRenderer {
 
             // Before the billboards, so those behind the player are hidden by it.
             this.playerRenderer.render(this.game.getLevel(), player, this.playerCamera, cameraPartialTicks);
+            Multiplayer.renderPlayers(this.game, this.game.getLevel(), this.playerRenderer, this.playerCamera);
             lap("player");
 
             levelRenderer.renderBillboards(this.playerCamera.getYaw(), this.playerCamera.getPitch(),
@@ -278,6 +281,7 @@ public class GameRenderer {
 
             // The HUD lays itself out inside the viewport (crosshair centred on the world view).
             this.game.getHud().render(this.game.getFont(), viewWidth, viewHeight);
+            Multiplayer.renderNameTags(this.game.getFont(), viewWidth, viewHeight);
 
             wm.viewport(0, 0, width, height);
         }

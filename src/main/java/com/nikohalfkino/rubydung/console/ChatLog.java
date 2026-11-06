@@ -63,6 +63,11 @@ public class ChatLog {
         add(Kind.MESSAGE, this.nick, text);
     }
 
+    /** a message from somebody else (another player on the server) */
+    public void sayAs(String sender, String text) {
+        add(Kind.MESSAGE, sender, text);
+    }
+
     public void notice(String text) {
         add(Kind.NOTICE, null, text);
     }

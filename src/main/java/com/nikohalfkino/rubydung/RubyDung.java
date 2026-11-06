@@ -8,6 +8,7 @@ import com.nikohalfkino.rubydung.console.ChatLog;
 import com.nikohalfkino.rubydung.console.Console;
 import com.nikohalfkino.rubydung.interfaces.*;
 import com.nikohalfkino.rubydung.interfaces.hud.CenterIndicator;
+import com.nikohalfkino.rubydung.interfaces.hud.ChatHud;
 import com.nikohalfkino.rubydung.interfaces.hud.CrosshairHud;
 import com.nikohalfkino.rubydung.interfaces.hud.DebugHud;
 import com.nikohalfkino.rubydung.interfaces.hud.HandHud;
@@ -18,6 +19,7 @@ import com.nikohalfkino.rubydung.interfaces.screen.TitleScreen;
 import com.nikohalfkino.rubydung.level.*;
 import com.nikohalfkino.rubydung.level.tiles.DoorColor;
 import com.nikohalfkino.rubydung.level.tiles.Tile;
+import com.nikohalfkino.rubydung.net.Multiplayer;
 import com.nikohalfkino.rubydung.level.generation.LevelGenerator;
 import com.nikohalfkino.rubydung.player.DoorTravel;
 import com.nikohalfkino.rubydung.player.Player;
@@ -100,6 +102,10 @@ public class RubyDung implements Runnable {
 
     public int getHeight() {
         return this.windowManager.getLogicalHeight();
+    }
+
+    public GameSession getSession() {
+        return this.session;
     }
 
     public Screen getCurrentScreen() {
@@ -211,6 +217,7 @@ public class RubyDung implements Runnable {
         this.hud.register(new CrosshairHud());
         this.hud.register(new InteractPromptHud(this), Anchor.CENTER, 0, 28);
         this.hud.register(this.centerIndicator);
+        this.hud.register(new ChatHud(this));
 
         WorldManager.pruneIncompleteWorlds();
 
@@ -313,7 +320,8 @@ public class RubyDung implements Runnable {
 
     // no-op without a world
     private void saveWorldTime() {
-        if (hasWorld()) {
+        // a world downloaded from a server is not ours to save
+        if (hasWorld() && !Multiplayer.isClient()) {
             WorldManager.saveWorldTime(getLevel().getWorldName(), this.dayNightCycle);
         }
     }
@@ -336,6 +344,8 @@ public class RubyDung implements Runnable {
 
     /** saves and unloads the world, otherwise hasWorld() stays true after quitting */
     public void quitToTitle() {
+        Multiplayer.shutdown("Left the game");
+
         if (hasWorld()) {
             saveLevel();
             this.session.leaveWorld();
@@ -366,6 +376,7 @@ public class RubyDung implements Runnable {
     }
 
     public void destroy() {
+        Multiplayer.shutdown("Game closed");
         saveLevel();
         GameSettings.save();
         KeyBinding.save();
@@ -433,6 +444,9 @@ public class RubyDung implements Runnable {
     }
 
     private void tick() {
+        // The LAN server and the connection to a server keep going while a menu is open.
+        Multiplayer.tick(this);
+
         // Autosave the clock so a crash or a quit path that skips saveLevel() loses at most ~10 s.
         if (hasWorld() && ++this.ticksSinceTimeSave >= TIME_SAVE_INTERVAL_TICKS) {
             this.ticksSinceTimeSave = 0;

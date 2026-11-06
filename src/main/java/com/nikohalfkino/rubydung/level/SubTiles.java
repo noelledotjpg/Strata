@@ -351,6 +351,32 @@ public final class SubTiles {
         return entries;
     }
 
+    /** the sub-tiles of one cell as saveable entries (what goes over the network) */
+    public List<Entry> cellEntries(int x, int y, int z) {
+        List<Entry> out = new ArrayList<>();
+        for (SubTile s : at(x, y, z)) {
+            Tile tile = Tile.byId(s.tileId);
+            if (tile != null) {
+                out.add(new Entry(x, y, z, tile.name, s.data, s.ox, s.oy, s.oz));
+            }
+        }
+        return out;
+    }
+
+    /** replaces the sub-tiles of one cell with the entries (unknown tile names are skipped), notifies like add / remove do */
+    void replaceCell(int x, int y, int z, List<Entry> entries) {
+        List<SubTile> next = new ArrayList<>();
+        for (Entry e : entries) {
+            Tile tile = Tile.byName(e.tileName);
+            if (tile == null || tile == Tile.AIR || next.size() >= MAX_PER_CELL) {
+                continue;
+            }
+            next.add(new SubTile(this.nextId++, tile.id, e.data, e.ox, e.oy, e.oz));
+        }
+        store(x, y, z, next);
+        this.level.subTilesChanged(x, y, z);
+    }
+
     /** replaces everything with saved entries, unknown tile names (a removed tile) are skipped, no notifications */
     void restore(List<Entry> entries) {
         this.cells.clear();

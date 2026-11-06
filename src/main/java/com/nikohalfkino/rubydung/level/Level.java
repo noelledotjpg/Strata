@@ -64,6 +64,13 @@ public class Level {
 
     final ArrayList<LevelListener> levelListeners = new ArrayList<>();
 
+    // multiplayer: told about every change that has to reach other players (null in a single player game)
+    private LevelEditListener editListener;
+    // above 0 while a change that came from the network is applied: those are not reported back
+    private int networkApplyDepth = 0;
+    // a world downloaded from a server is never written to disk
+    private boolean readOnly = false;
+
     private final SubTiles subTiles = new SubTiles(this);
 
     // the liquid of every cell, separate from the block array so a block can share a cell with it
@@ -149,6 +156,112 @@ public class Level {
         WorldGenStatus.set("Building terrain...");
     }
 
+    /**
+     * a world made of arrays received from a server (see NetworkSnapshot). nothing is generated or read from disk,
+     * the caller fills in multi-tiles, sub-tiles and liquids and then lights the level
+     */
+    Level(String worldName, int width, int height, int depth, LevelGenerator.WorldType type, long seed,
+          byte[] blocks, byte[] data) {
+        this.worldName = worldName;
+        this.width  = width;
+        this.height = height;
+        this.depth  = depth;
+        this.type   = type;
+        this.seed   = seed;
+        this.blocks = blocks;
+        this.data   = data;
+        this.liquids = new LiquidLayer(this, width, depth, height);
+        this.palette = TilePalette.fromCurrentRegistry();
+        this.lighting = new LevelLighting(this);
+    }
+
+    byte[] blocksArray() {
+        return this.blocks;
+    }
+
+    byte[] dataArray() {
+        return this.data;
+    }
+
+    // multiplayer
+
+    public void setEditListener(LevelEditListener listener) {
+        this.editListener = listener;
+    }
+
+    public LevelEditListener getEditListener() {
+        return this.editListener;
+    }
+
+    public void setReadOnly(boolean readOnly) {
+        this.readOnly = readOnly;
+    }
+
+    public boolean isReadOnly() {
+        return this.readOnly;
+    }
+
+    /** a tile change that came from the network: applied, but not reported to the edit listener */
+    public void applyTileFromNetwork(int x, int y, int z, int id, int data) {
+        if (x < 0 || y < 0 || z < 0 || x >= this.width || y >= this.depth || z >= this.height) {
+            return;
+        }
+        this.networkApplyDepth++;
+        try {
+            int currentId = getTile(x, y, z);
+            if (currentId == (id & 0xFF) && getData(x, y, z) == (data & 0xFF)) {
+                return;
+            }
+            Tile tile = Tile.byId(id & 0xFF);
+            if (currentId == (id & 0xFF) && tile != null && tile.isMultiTile()) {
+                setData(x, y, z, data & 0xFF);
+            } else {
+                setTile(x, y, z, id & 0xFF, data & 0xFF);
+            }
+        } finally {
+            this.networkApplyDepth--;
+        }
+    }
+
+    /** a liquid cell that came from the network (tileId 0 = dry) */
+    public void applyLiquidFromNetwork(int x, int y, int z, int tileId, int fill) {
+        if (x < 0 || y < 0 || z < 0 || x >= this.width || y >= this.depth || z >= this.height) {
+            return;
+        }
+        this.networkApplyDepth++;
+        try {
+            Tile tile = Tile.byId(tileId & 0xFF);
+            if (tile instanceof LiquidTile) {
+                this.liquids.set(x, y, z, (LiquidTile) tile, fill);
+            } else {
+                this.liquids.clear(x, y, z);
+            }
+        } finally {
+            this.networkApplyDepth--;
+        }
+    }
+
+    /** server: a client asked for these sub-tiles in a cell. unlike applySubTilesFromNetwork this is reported, so everyone is told */
+    public void setSubTilesOfCell(int x, int y, int z, List<SubTiles.Entry> entries) {
+        if (x < 0 || y < 0 || z < 0 || x >= this.width || y >= this.depth || z >= this.height) {
+            return;
+        }
+        this.subTiles.replaceCell(x, y, z, entries);
+    }
+
+    /** the sub-tiles of a cell as the network says they are */
+    public void applySubTilesFromNetwork(int x, int y, int z, List<SubTiles.Entry> entries) {
+        if (x < 0 || y < 0 || z < 0 || x >= this.width || y >= this.depth || z >= this.height) {
+            return;
+        }
+        this.networkApplyDepth++;
+        try {
+            this.subTiles.replaceCell(x, y, z, entries);
+        } finally {
+            this.networkApplyDepth--;
+        }
+    }
+
     /** floods the oceans and lakes of a freshly generated world (nothing to do for loaded or flat worlds) */
     private void applyGeneratedWater() {
         if (this.generatedWater != null) {
@@ -215,6 +328,9 @@ public class Level {
     }
 
     public void save() {
+        if (this.readOnly) {
+            return;
+        }
         SaveQueue.flush();
         cancelSnapshot();
         byte[] encodedBlocks = writeSideFiles();
@@ -246,7 +362,7 @@ public class Level {
      * still writing. Saving on quit or door travel goes through save() and never skips.
      */
     public void saveAsync(Runnable onDone) {
-        if (!this.asyncSaveRunning.compareAndSet(false, true)) {
+        if (this.readOnly || !this.asyncSaveRunning.compareAndSet(false, true)) {
             return;
         }
 
@@ -404,6 +520,10 @@ public class Level {
         for (LevelListener levelListener : this.levelListeners) {
             levelListener.tileChanged(x, y, z);
         }
+
+        if (this.editListener != null && this.networkApplyDepth == 0) {
+            this.editListener.tileEdited(x, y, z, getTile(x, y, z), getData(x, y, z));
+        }
     }
 
     public boolean isTile(int x, int y, int z) {
@@ -465,6 +585,11 @@ public class Level {
         for (LevelListener levelListener : this.levelListeners) {
             levelListener.tileChanged(x, y, z);
         }
+
+        if (this.editListener != null && this.networkApplyDepth == 0) {
+            this.editListener.liquidChanged(x, y, z, newLiquid == null ? 0 : newLiquid.id,
+                    newLiquid == null ? 0 : this.liquids.getFill(x, y, z));
+        }
     }
 
     // the cells of a column between minY and maxY may have turned into ocean (its floor was dug out): rebuild what was baked from them
@@ -479,6 +604,10 @@ public class Level {
         for (LevelListener levelListener : this.levelListeners) {
             levelListener.tileChanged(x, y, z);
             levelListener.lightColumnChanged(x, z, Math.max(0, y - SHADOW_FADE_DISTANCE), y);
+        }
+
+        if (this.editListener != null && this.networkApplyDepth == 0) {
+            this.editListener.subTilesEdited(x, y, z);
         }
     }
 
@@ -547,15 +676,28 @@ public class Level {
             return;
         }
 
+        boolean liquid = setTileUnchecked(x, y, z, id, data);
+
+        if (this.editListener != null && this.networkApplyDepth == 0) {
+            if (liquid) {
+                this.editListener.liquidPlaced(x, y, z, id & 0xFF);
+            } else {
+                this.editListener.tileEdited(x, y, z, getTile(x, y, z), getData(x, y, z));
+            }
+        }
+    }
+
+    /** the work of setTile, true if the tile was a liquid (it went to the liquid layer) */
+    private boolean setTileUnchecked(int x, int y, int z, int id, int data) {
         Tile newTile = Tile.byId(id & 0xFF);
         if (newTile instanceof LiquidTile) {
             // a liquid goes in the liquid layer, next to whatever block is in the cell
             this.liquids.set(x, y, z, (LiquidTile) newTile);
-            return;
+            return true;
         }
         if (newTile != null && newTile.isMultiTile()) {
             placeMultiTile(newTile, x, y, z, data);
-            return;
+            return false;
         }
 
         MultiTileInstance existing = this.multiTileCells.get(cellIndex(x, y, z));
@@ -564,6 +706,7 @@ public class Level {
         }
 
         setBlock(x, y, z, id, data, false, false);
+        return false;
     }
 
     private void setBlock(int x, int y, int z, int id, int data, boolean oldWasPart, boolean newIsPart) {
@@ -705,7 +848,7 @@ public class Level {
         return doors;
     }
 
-    private List<int[]> collectMultiTileOrigins() {
+    List<int[]> collectMultiTileOrigins() {
         List<int[]> origins = new ArrayList<>(this.multiTiles.size());
         for (MultiTileInstance instance : this.multiTiles) {
             origins.add(new int[]{instance.x, instance.y, instance.z});
@@ -713,7 +856,7 @@ public class Level {
         return origins;
     }
 
-    private void registerMultiTiles(List<int[]> origins) {
+    void registerMultiTiles(List<int[]> origins) {
         this.multiTileCells.clear();
         this.multiTiles.clear();
 

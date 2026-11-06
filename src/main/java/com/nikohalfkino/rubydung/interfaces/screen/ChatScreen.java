@@ -2,6 +2,8 @@ package com.nikohalfkino.rubydung.interfaces.screen;
 
 import com.nikohalfkino.rubydung.RubyDung;
 import com.nikohalfkino.rubydung.console.ChatLog;
+import com.nikohalfkino.rubydung.net.Multiplayer;
+import com.nikohalfkino.rubydung.net.PlayerColors;
 import com.nikohalfkino.rubydung.console.ChatText;
 import com.nikohalfkino.rubydung.console.CommandCompleter;
 import com.nikohalfkino.rubydung.console.Console;
@@ -56,11 +58,6 @@ public class ChatScreen extends FramePanelScreen implements FrameMouthProvider {
     private static final int NOTICE_MARK_COLOR = 0x55CCFF;
     private static final int NOTICE_TEXT_COLOR = 0xAADDFF;
 
-    private static final int[] NICK_COLORS = {
-            0xFF7777, 0x77FF77, 0x7799FF, 0xFFFF66,
-            0xFF77FF, 0x66FFFF, 0xFFAA55, 0xBB99FF
-    };
-
     private final ChatLog chat;
     private final TextField input = new TextField(MAX_INPUT);
     private final long openedAt = System.nanoTime();
@@ -100,7 +97,7 @@ public class ChatScreen extends FramePanelScreen implements FrameMouthProvider {
         this.inputBox.setVisibleWhen(this::isFrameOpen);
 
         this.userList = add(new UserList(
-                () -> Collections.singletonList(this.chat.getNick()),
+                () -> Multiplayer.playerNames(this.chat.getNick()),
                 ChatScreen::nickColor,
                 CHAT_SCALE).setSelf(this.chat::getNick), Anchor.TOP_LEFT, 0, 0);
         this.userList.setVisibleWhen(this::isFrameOpen);
@@ -237,7 +234,8 @@ public class ChatScreen extends FramePanelScreen implements FrameMouthProvider {
 
         if (ChatInputSyntax.isCommand(text)) {
             runCommand(text.substring(1).trim());
-        } else {
+        } else if (!Multiplayer.sendChat(text)) {
+            // alone or hosting: shown here (a joined player's chat comes back from the server)
             this.chat.say(text);
             this.game.getSpeaker().speak(text);
         }
@@ -703,12 +701,7 @@ public class ChatScreen extends FramePanelScreen implements FrameMouthProvider {
     }
 
     public static int nickColor(String nick) {
-        return NICK_COLORS[
-                Math.floorMod(
-                        nick == null ? 0 : nick.hashCode(),
-                        NICK_COLORS.length
-                )
-                ];
+        return PlayerColors.of(nick);
     }
 
     private static int textWidth(Font font, String text) {

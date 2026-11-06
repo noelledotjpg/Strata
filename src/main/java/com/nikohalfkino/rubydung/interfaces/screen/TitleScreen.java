@@ -45,6 +45,7 @@ public class TitleScreen extends MenuScreen {
         menu.setPadding(PANEL_PADDING);
         menu.setShadowAlpha(1.0f);
         menu.add(new Button("Play").onClick(() -> game.openScreen(new WorldListScreen(game))));
+        menu.add(new Button("Multiplayer").onClick(() -> game.openScreen(new JoinServerScreen(game))));
         menu.add(new Button("Options").onClick(() -> game.openScreen(new OptionsScreen(game))));
         menu.add(new Button("Quit").onClick(game::quit));
 
