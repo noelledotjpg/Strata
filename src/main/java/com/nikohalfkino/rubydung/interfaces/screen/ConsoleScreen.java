@@ -1,7 +1,9 @@
 package com.nikohalfkino.rubydung.interfaces.screen;
 
+import com.nikohalfkino.rubydung.console.CommandCompleter;
 import com.nikohalfkino.rubydung.console.Console;
 import com.nikohalfkino.rubydung.interfaces.Gui2D;
+import com.nikohalfkino.rubydung.interfaces.SuggestionBox;
 import com.nikohalfkino.rubydung.render.Font;
 import java.util.ArrayList;
 import java.util.List;
@@ -12,6 +14,9 @@ public class ConsoleScreen {
 
     private static final float HEIGHT_FRACTION = 0.4f;
     private static final int HORIZONTAL_PADDING = 8;
+
+    // the console's own text is the font's default size, which is 2x
+    private static final float SUGGESTION_SCALE = 2.0F;
 
     public static void render(Console console, Font font, int width, int height) {
         if (!console.isOpen()) {
@@ -67,6 +72,13 @@ public class ConsoleScreen {
         }
 
         console.getInput().render(font, HORIZONTAL_PADDING, (int) consoleHeight - inputBarHeight + 6, 0xFFFFFF, "] ");
+
+        // matches for the word being typed, hanging below the console over the world
+        CommandCompleter.Popup popup = console.getCompleter().popup();
+        if (popup != null) {
+            SuggestionBox.draw(font, popup, HORIZONTAL_PADDING, (int) consoleHeight,
+                    width - HORIZONTAL_PADDING * 2, false, 0xFFFFFF, SUGGESTION_SCALE);
+        }
 
         Gui2D.end();
 

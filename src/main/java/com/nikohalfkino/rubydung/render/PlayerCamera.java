@@ -46,7 +46,7 @@ public final class PlayerCamera {
 
     public static final float DEFAULT_FREECAM_SPEED = 10.0F;
     public static final float MIN_FREECAM_SPEED = 0.5F;
-    public static final float MAX_FREECAM_SPEED = 200.0F;
+    public static final float MAX_FREECAM_SPEED = 2048.0F;
 
     private static final float MOUSE_SENSITIVITY = 0.15F;
 

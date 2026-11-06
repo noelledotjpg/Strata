@@ -20,13 +20,19 @@ public class ChatLog {
         public final String time;
         public final Kind kind;
         public final String nick;
+        /** plain text, the copyable and link parts are in spans */
         public final String text;
+        public final List<ChatText.Span> spans;
+        /** pictures to show under the line */
+        public final List<String> images;
 
-        Line(String time, Kind kind, String nick, String text) {
+        Line(String time, Kind kind, String nick, ChatText.Parsed parsed) {
             this.time = time;
             this.kind = kind;
             this.nick = nick;
-            this.text = text;
+            this.text = parsed.text;
+            this.spans = parsed.spans;
+            this.images = parsed.images;
         }
     }
 
@@ -62,7 +68,9 @@ public class ChatLog {
     }
 
     private void add(Kind kind, String nick, String text) {
-        this.lines.add(new Line(LocalTime.now().format(TIME_FORMAT), kind, nick, text == null ? "" : text));
+        // only system messages can mark copyable sections, what the player types is just checked for links
+        ChatText.Parsed parsed = ChatText.parse(text == null ? "" : text, kind == Kind.NOTICE);
+        this.lines.add(new Line(LocalTime.now().format(TIME_FORMAT), kind, nick, parsed));
         if (this.lines.size() > MAX_LINES) {
             this.lines.remove(0);
         }

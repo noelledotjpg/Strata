@@ -163,7 +163,7 @@ final class BlockBreaker {
     private void breakAt(HitResult hit) {
         if (hit.liquid) {
             // The player holds this liquid's tile: breaking takes the liquid out of the cell.
-            SoundEffects.playRandom("tile_break", 3);
+            SoundEffects.playTileBreak(this.ctx.selectedTile);
             this.ctx.level.getLiquids().clear(hit.x, hit.y, hit.z);
             return;
         }
@@ -172,7 +172,8 @@ final class BlockBreaker {
     }
 
     private void breakPart(HitResult hit) {
-        SoundEffects.playRandom("tile_break", 3);
+        // the sound belongs to the tile being broken, looked up before it is removed
+        SoundEffects.playTileBreak(brokenTile(hit));
         if (hit.overlayId >= 0) {
             // A tile sharing the cell: remove just that one; the cell's normal tile stays.
             this.ctx.level.getSubTiles().remove(hit.x, hit.y, hit.z, hit.overlayId);
@@ -188,6 +189,19 @@ final class BlockBreaker {
             }
         }
         this.ctx.level.setTile(hit.x, hit.y, hit.z, 0);
+    }
+
+    // the tile a break hit is about: the sub-tile sharing the cell, or the cell's own tile
+    private Tile brokenTile(HitResult hit) {
+        if (hit.overlayId >= 0) {
+            for (SubTile sub : this.ctx.level.getSubTiles().at(hit.x, hit.y, hit.z)) {
+                if (sub.id == hit.overlayId) {
+                    return Tile.byId(sub.tileId);
+                }
+            }
+            return null;
+        }
+        return Tile.byId(this.ctx.level.getTile(hit.x, hit.y, hit.z));
     }
 
     // a block placed into the free half of a slab's cell (a clipped sub-tile) is only a half block because the slab was in the way

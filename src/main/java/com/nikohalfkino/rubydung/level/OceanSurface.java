@@ -121,10 +121,13 @@ final class OceanSurface {
 
     /** a block or liquid changed: it matters if it is at the surface level, and the neighbouring columns' shore flags look at it too */
     void cellChanged(int x, int y, int z) {
-        if (y != this.level.getLiquids().getSeaTop()) {
-            return;
+        int top = this.level.getLiquids().getSeaTop();
+        if (y != top && y != top - 1) {
+            return;         // top - 1: a water tile there makes the column beside the surface count as water (see solid)
         }
-        refreshWet(x, z, y);
+        if (y == top) {
+            refreshWet(x, z, y);
+        }
         markAround(x, z);
     }
 
@@ -349,7 +352,20 @@ final class OceanSurface {
         if (x < 0 || z < 0 || x >= this.level.width || z >= this.level.height) {
             return false;
         }
-        return liquids.columnThreshold(x, z) >= top || coversCell(x, top, z);
+        if (liquids.columnThreshold(x, z) >= top) {
+            // dry land, unless the sea has flooded it with real water tiles: those draw their own surface at the same height, and a
+            // wall here would put a shore rim on the seam between the two
+            return !holdsWater(liquids, x, z, top);
+        }
+        return coversCell(x, top, z);
+    }
+
+    /** a water tile in the surface cell, or in the one under it with nothing in the way above (the sea surface is partway up the top cell) */
+    private boolean holdsWater(LiquidLayer liquids, int x, int z, int top) {
+        if (liquids.get(x, top, z) != null) {
+            return true;
+        }
+        return top > 0 && liquids.get(x, top - 1, z) != null && liquids.passable(x, top, z);
     }
 
     /** whether the cell holds something that breaks the surface AND fills the cell's whole footprint (a full block, a top slab, ...) */

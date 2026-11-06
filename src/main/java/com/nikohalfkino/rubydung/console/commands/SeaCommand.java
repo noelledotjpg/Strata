@@ -2,12 +2,14 @@ package com.nikohalfkino.rubydung.console.commands;
 
 import com.nikohalfkino.rubydung.RubyDung;
 import com.nikohalfkino.rubydung.console.Command;
+import com.nikohalfkino.rubydung.console.CommandArg;
 import com.nikohalfkino.rubydung.console.Console;
 import com.nikohalfkino.rubydung.level.LiquidLayer;
 import com.nikohalfkino.rubydung.level.tiles.LiquidTile;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 
 public class SeaCommand implements Command {
@@ -25,7 +27,7 @@ public class SeaCommand implements Command {
     @Override
     public List<String> help() {
         return Arrays.asList(
-                "Usage:",
+                "Usage: sea [height] [blocks/sec] | rise | stop | liquid | status",
                 "  sea                              - print the sea height, target, rate and liquid",
                 "  sea <height>                     - move the whole sea to this height at once (blocks)",
                 "  sea <height> <blocks/sec>        - let the sea rise or fall to a height by itself (eases in and out)",
@@ -33,6 +35,41 @@ public class SeaCommand implements Command {
                 "  sea stop                         - freeze the sea where it is",
                 "  sea liquid                       - print the sea's liquid and the ones you can pick",
                 "  sea liquid <name>                - make the sea out of another liquid (water, lava...)");
+    }
+
+    @Override
+    public List<CommandArg> arguments(String[] given) {
+        CommandArg first = CommandArg.choice("height", "rise", "stop", "liquid", "status")
+                .orNumber()
+                .optional()
+                .note("rise", "ease the sea to a height at a rate")
+                .note("stop", "freeze the sea where it is")
+                .note("liquid", "show or change what the sea is made of")
+                .note("status", "print the sea height and rate");
+
+        if (given.length == 0) {
+            return Collections.singletonList(first);
+        }
+
+        String sub = given[0].toLowerCase();
+
+        switch (sub) {
+            case "rise":
+                return Arrays.asList(first, CommandArg.number("height"), CommandArg.number("blocks/sec"));
+            case "liquid": {
+                List<String> names = new ArrayList<>();
+                for (LiquidTile liquid : LiquidTile.all()) {
+                    names.add(liquid.name);
+                }
+                return Arrays.asList(first, CommandArg.choice("liquid", names.toArray(new String[0])).optional());
+            }
+            case "stop":
+            case "status":
+                return Collections.singletonList(first);
+            default:
+                // "sea <height> [blocks/sec]"
+                return Arrays.asList(first, CommandArg.number("blocks/sec").optional());
+        }
     }
 
     @Override

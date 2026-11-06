@@ -1,0 +1,88 @@
+# File names are relative to assets/rubydung/sfx/ and have no ".ogg":
+#   "tiles/door_open"  ->  assets/rubydung/sfx/tiles/door_open.ogg
+
+# mixer settings
+[mixer]
+output_rate        = 44100
+buffer_ms          = 80
+block_frames       = 512    # how much is mixed per step, 512 = ~11 ms
+max_voices         = 48     # more than this at once: the oldest fade out
+min_gap_ms         = 45     # default: the same sound twice within this is dropped
+pitch_variation    = 0.12   # default random pitch shift (+-) for sounds with several files or playVaried
+high_priority_thread = true
+
+
+[music]
+enabled             = true
+path                = "ost/wind96/"
+fade_in_seconds     = 2.0
+crossfade_seconds   = 2.0
+gain                = 0.35   # fixed loudness trim before the options slider
+buffer_ms           = 200    # smaller = the volume slider reacts faster
+start_delay_seconds = 2
+tracks = [
+    "arcadia_town",
+    "desolate",
+    "dream_port",
+    "feather_lakefront",
+    "foggy_jungle",
+    "highwind_prairie",
+    "homesick_coast",
+    "inaction",
+    "kylin_forest",
+    "mirror_lakefront",
+    "tranquility_path",
+    "yujia_forest",
+]
+
+# SFX
+# files           one or more; with several, one is picked at random (never the same twice in a row)
+# volume          multiplier, default 1.0
+# pitch           base pitch, default 1.0
+# pitch_variation random +- shift around "pitch" per play, default = [mixer] pitch_variation
+# pitch_min/max   instead of the above: a random pitch between these two (either one alone
+#                 is enough, the other then uses "pitch"). 1.0 = as recorded, 2.0 = an octave up
+# gap_ms          drop the sound if it played less than this long ago, default = [mixer] min_gap_ms
+# preload         decode at startup, default true
+
+[sounds.door_open]
+files = ["tiles/door_open"]
+pitch_variation = 0.0
+
+[sounds.door_travel]
+files = ["tiles/door_travel"]
+pitch_variation = 0.0
+
+# generic sounds
+[sounds.tile_break]
+files = ["tiles/tile_break_1", "tiles/tile_break_2", "tiles/tile_break_3"]
+
+[sounds.tile_place]
+files = ["tiles/tile_place_1", "tiles/tile_place_2", "tiles/tile_place_3"]
+
+# Example of a material specific sound:
+# [sounds.stone_break]
+# files = ["tiles/stone_break_1", "tiles/stone_break_2"]
+# [sounds.stone_place]
+# files = ["tiles/stone_place_1", "tiles/stone_place_2"]
+
+
+# tile sounds groups
+# A tile with no group, or a group that doesn't set an event, falls back to
+# [tile_sounds.default]. Use "none" to make a tile silent for an event.
+# Tiles are listed by their registry name (the string in new Tile("stone")).
+
+[tile_sounds.default]
+break = "tile_break"
+place = "tile_place"
+
+# [tile_sounds.stone]
+# tiles = ["stone", "cobblestone", "slate", "stone_bricks", "stone_bricks_slab"]
+# break = "stone_break"
+# place = "stone_place"
+
+[sounds.key_press]
+files = ["ui/keypress"]
+pitch_min = 0.8
+pitch_max = 1.4
+gap_ms = 0

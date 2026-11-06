@@ -3,9 +3,11 @@ package com.nikohalfkino.rubydung.console.commands;
 import com.nikohalfkino.rubydung.level.DayNightCycle;
 import com.nikohalfkino.rubydung.RubyDung;
 import com.nikohalfkino.rubydung.console.Command;
+import com.nikohalfkino.rubydung.console.CommandArg;
 import com.nikohalfkino.rubydung.console.Console;
 
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 
 public class TimeCommand implements Command {
@@ -23,11 +25,39 @@ public class TimeCommand implements Command {
     @Override
     public List<String> help() {
         return Arrays.asList(
-                "Usage:",
+                "Usage: time <set|speed|freeze|unfreeze|query>",
                 "  time set <dawn|noon|dusk|midnight|0.0-1.0>  - jump to a time",
                 "  time speed <multiplier>                     - e.g. 2 = 2x faster, 0 = freeze",
                 "  time freeze / unfreeze                      - stop / resume the cycle",
                 "  time query                                  - print current time & speed");
+    }
+
+    @Override
+    public List<CommandArg> arguments(String[] given) {
+        CommandArg action = CommandArg.choice("action", "set", "speed", "freeze", "unfreeze", "query")
+                .note("set", "jump to a time")
+                .note("speed", "change how fast time passes")
+                .note("freeze", "stop the cycle")
+                .note("unfreeze", "resume the cycle")
+                .note("query", "print the current time and speed");
+
+        if (given.length == 0) {
+            return Collections.singletonList(action);
+        }
+
+        switch (given[0].toLowerCase()) {
+            case "set":
+                return Arrays.asList(action, CommandArg.choice("time", "dawn", "noon", "dusk", "midnight")
+                        .orNumber()
+                        .note("dawn", "0.25")
+                        .note("noon", "0.5")
+                        .note("dusk", "0.75")
+                        .note("midnight", "0.0"));
+            case "speed":
+                return Arrays.asList(action, CommandArg.number("multiplier"));
+            default:
+                return Collections.singletonList(action);
+        }
     }
 
     @Override

@@ -34,8 +34,17 @@ final class LiquidTinting {
                     "    float idx = floor(p / 256.0);\n" +
                     "    float depth = (p - idx * 256.0) / 8.0;\n" +
                     "    bool wet = true;\n" +
+                    // a sprite in stored liquid: p = 266240 + idx * 16384 + surfaceEighths, depth = how far the fragment is under that surface
+                    "    if (p >= 266240.0) {\n" +
+                    "        float q = p - 266240.0;\n" +
+                    "        idx = floor(q / 16384.0);\n" +
+                    "        float surf = (q - idx * 16384.0) / 8.0;\n" +
+                    "        float y = sampleY < -900.0 ? surf - 0.5 : sampleY;\n" +
+                    "        depth = surf - y;\n" +
+                    "        if (depth <= 0.0) wet = false;\n" +
+                    "        depth = clamp(depth, 0.125, 31.875);\n" +
                     // the ocean: p = 2048 + wetFrom * 512 + cellY, wet once the sea is above wetFrom (see UnderwaterTint)
-                    "    if (p >= 2048.0) {\n" +
+                    "    } else if (p >= 2048.0) {\n" +
                     "        float q = p - 2048.0;\n" +
                     "        float wetFrom = floor(q / 512.0);\n" +
                     "        float cellY = q - wetFrom * 512.0;\n" +

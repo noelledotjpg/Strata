@@ -2,10 +2,12 @@ package com.nikohalfkino.rubydung.console.commands;
 
 import com.nikohalfkino.rubydung.RubyDung;
 import com.nikohalfkino.rubydung.console.Command;
+import com.nikohalfkino.rubydung.console.CommandArg;
 import com.nikohalfkino.rubydung.console.Console;
 import com.nikohalfkino.rubydung.level.LiquidSimulator;
 
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 
 public class LiquidCommand implements Command {
@@ -23,12 +25,38 @@ public class LiquidCommand implements Command {
     @Override
     public List<String> help() {
         return Arrays.asList(
-                "Usage:",
+                "Usage: liquid <sim|finite|speed|step|status>",
                 "  liquid sim <on|off|toggle>  - turn the liquid simulation on or off",
                 "  liquid finite <on|off|toggle> - finite: liquid is conserved, no infinite sources",
                 "  liquid speed <ticks/sec>    - how often liquid moves (default 10)",
                 "  liquid step [n]             - run n simulation ticks now, even while off",
                 "  liquid status               - print whether it is on, its speed and busy cells");
+    }
+
+    @Override
+    public List<CommandArg> arguments(String[] given) {
+        CommandArg action = CommandArg.choice("action", "sim", "finite", "speed", "step", "status")
+                .note("sim", "turn the liquid simulation on or off")
+                .note("finite", "conserve liquid, no infinite sources")
+                .note("speed", "how often liquid moves")
+                .note("step", "run simulation ticks now")
+                .note("status", "print the simulation state");
+
+        if (given.length == 0) {
+            return Collections.singletonList(action);
+        }
+
+        switch (given[0].toLowerCase()) {
+            case "sim":
+            case "finite":
+                return Arrays.asList(action, CommandArg.choice("state", "on", "off", "toggle"));
+            case "speed":
+                return Arrays.asList(action, CommandArg.number("ticks/sec"));
+            case "step":
+                return Arrays.asList(action, CommandArg.integer("n").optional());
+            default:
+                return Collections.singletonList(action);
+        }
     }
 
     @Override

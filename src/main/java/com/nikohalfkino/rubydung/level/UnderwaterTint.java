@@ -25,8 +25,33 @@ public final class UnderwaterTint {
     private static final int MAX_EIGHTHS = 255;
     private static final float PACK_RANGE = 524288.0F;
     private static final int OCEAN_BASE = 2048;
+    // SPRITE kind, above everything the ocean can pack (2048 + 511 * 512 + 511): p = SURFACE_BASE + liquidIndex * 16384 + surfaceEighths
+    private static final int SURFACE_BASE = 266240;
 
     private UnderwaterTint() {
+    }
+
+    /**
+     * the alpha for a billboard sprite standing in the cell (x, y, z). the ocean packs the same as for a face (the shader measures its depth at each
+     * fragment). stored liquid packs the height of its SURFACE instead of the depth over the cell, so the shader can do the same: the part of
+     * the sprite above the water stays clear, and the part under it darkens by how far under it is
+     */
+    public static float packSprite(Level level, int x, int y, int z) {
+        LiquidLayer liquids = level.getLiquids();
+        if (liquids.oceanWetFrom(x, y, z) >= 0) {
+            return pack(level, x, y, z);
+        }
+        LiquidTile liquid = liquids.get(x, y, z);
+        if (liquid == null) {
+            return DRY;
+        }
+        int top = y;
+        for (int cy = y + 1; cy < level.depth && liquids.get(x, cy, z) == liquid; cy++) {
+            top = cy;
+        }
+        float surface = top + LiquidTile.SURFACE_HEIGHT * liquids.getFill(x, top, z) / (float) LiquidLayer.MAX_FILL;
+        int eighths = Math.max(1, Math.min(16383, Math.round(surface * 8.0F)));
+        return (SURFACE_BASE + liquid.getLiquidIndex() * 16384 + eighths) / PACK_RANGE;
     }
 
     /** the alpha for a face whose open side is the cell (x, y, z) */

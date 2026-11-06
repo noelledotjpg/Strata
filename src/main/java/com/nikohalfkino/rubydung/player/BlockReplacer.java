@@ -110,7 +110,7 @@ final class BlockReplacer {
 
         this.ctx.level.setTile(hit.x, hit.y, hit.z, selected.id, newData);
         HandHud.swingHeld(HandHud.Action.PLACE);
-        SoundEffects.playRandom("tile_place", 3);
+        SoundEffects.playTilePlace(selected);
         return true;
     }
 
@@ -119,7 +119,7 @@ final class BlockReplacer {
         this.ctx.level.setTile(hit.x, hit.y, hit.z, 0);
         this.ctx.level.getLiquids().set(hit.x, hit.y, hit.z, liquid);
         HandHud.swingHeld(HandHud.Action.PLACE);
-        SoundEffects.playRandom("tile_place", 3);
+        SoundEffects.playTilePlace(liquid);
         return true;
     }
 
@@ -142,7 +142,7 @@ final class BlockReplacer {
 
         this.ctx.level.setTile(hit.x, hit.y, hit.z, selected.id, rotation);
         HandHud.swingHeld(HandHud.Action.PLACE);
-        SoundEffects.playRandom("tile_place", 3);
+        SoundEffects.playTilePlace(selected);
         return true;
     }
 }

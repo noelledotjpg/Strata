@@ -2,11 +2,13 @@ package com.nikohalfkino.rubydung.console.commands;
 
 import com.nikohalfkino.rubydung.RubyDung;
 import com.nikohalfkino.rubydung.console.Command;
+import com.nikohalfkino.rubydung.console.CommandArg;
 import com.nikohalfkino.rubydung.console.Console;
 import com.nikohalfkino.rubydung.player.PlayerPhysics;
 import com.nikohalfkino.rubydung.render.DebugRenderer;
 
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 
@@ -25,7 +27,7 @@ public class VectorsCommand implements Command {
     @Override
     public List<String> help() {
         return Arrays.asList(
-                "Usage:",
+                "Usage: vectors [on|off|scale <seconds>|info]",
                 "  vectors                  - toggle the arrows",
                 "  vectors on / off         - turn them on / off",
                 "  vectors scale <seconds>  - arrow length: how many seconds of movement an arrow shows (default "
@@ -35,6 +37,23 @@ public class VectorsCommand implements Command {
                 "magenta = how far the player really moved in the last tick (differs from the velocity when it hits something).",
                 "The box is orange on the ground and white in the air. Best watched in third person: in first person",
                 "the box is hidden, and in the freecam the player is locked so the arrows stay at zero.");
+    }
+
+    @Override
+    public List<CommandArg> arguments(String[] given) {
+        CommandArg action = CommandArg.choice("action", "on", "off", "toggle", "scale", "info")
+                .optional()
+                .note("on", "show the arrows")
+                .note("off", "hide the arrows")
+                .note("toggle", "switch them on or off")
+                .note("scale", "set the arrow length in seconds")
+                .note("info", "print the numbers");
+
+        if (given.length > 0 && given[0].equalsIgnoreCase("scale")) {
+            return Arrays.asList(action, CommandArg.number("seconds"));
+        }
+
+        return Collections.singletonList(action);
     }
 
     @Override

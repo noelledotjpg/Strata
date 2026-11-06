@@ -13,7 +13,6 @@ import com.nikohalfkino.rubydung.level.generation.WorldGenStatus;
 import com.nikohalfkino.rubydung.util.SaveQueue;
 import com.nikohalfkino.rubydung.player.Player;
 import com.nikohalfkino.rubydung.player.PlayerInteraction;
-import org.lwjgl.input.Mouse;
 
 import java.util.Random;
 
@@ -182,18 +181,10 @@ public class GameSession {
             WorldManager.saveWorldSize(worldName, width, height, depth);
         }
 
-        this.level = new Level(worldName, width, height, depth, type, seed);
-
-        if (this.levelRenderer != null) {
-            this.levelRenderer.dispose();
-        }
-
-        this.levelRenderer = new LevelRenderer(this.level);
-        this.player = new Player(this.level);
-        this.playerInteraction = new PlayerInteraction(this.level, this.player);
-
-        saveLevel();
-        Mouse.setGrabbed(true);
+        // Goes through the loading screen like any other world: generating while the old world is still being
+        // drawn made both slower, and the screen shows what the generator is doing. The new level is saved
+        // as soon as it is ready.
+        enterWorld(worldName, type, seed, width, height, depth, true);
     }
 
     /** saves on the calling thread (quit, door travel) */

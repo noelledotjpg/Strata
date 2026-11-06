@@ -2,10 +2,12 @@ package com.nikohalfkino.rubydung.console.commands;
 
 import com.nikohalfkino.rubydung.RubyDung;
 import com.nikohalfkino.rubydung.console.Command;
+import com.nikohalfkino.rubydung.console.CommandArg;
 import com.nikohalfkino.rubydung.console.Console;
 import com.nikohalfkino.rubydung.render.PlayerCamera;
 
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 
 public class FreecamCommand implements Command {
@@ -23,7 +25,7 @@ public class FreecamCommand implements Command {
     @Override
     public List<String> help() {
         return Arrays.asList(
-                "Usage:",
+                "Usage: freecam [on|off|speed <blocks/s>]",
                 "  freecam                  - toggle the freecam",
                 "  freecam on / off         - turn it on / off",
                 "  freecam speed <blocks/s> - fly speed (default "
@@ -31,6 +33,22 @@ public class FreecamCommand implements Command {
                 "While it is on the player stands still; fly the camera with the movement keys.",
                 "The sky (skybox, clouds, sun and moon) stays around the player, so you can fly out and look at it from outside.",
                 "It is 2000 blocks across: raise the speed to get there faster.");
+    }
+
+    @Override
+    public List<CommandArg> arguments(String[] given) {
+        CommandArg action = CommandArg.choice("action", "on", "off", "toggle", "speed")
+                .optional()
+                .note("on", "turn the freecam on")
+                .note("off", "turn the freecam off")
+                .note("toggle", "switch it on or off")
+                .note("speed", "set the fly speed in blocks/s");
+
+        if (given.length > 0 && given[0].equalsIgnoreCase("speed")) {
+            return Arrays.asList(action, CommandArg.number("blocks/s"));
+        }
+
+        return Collections.singletonList(action);
     }
 
     @Override

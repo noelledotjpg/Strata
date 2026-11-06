@@ -2,9 +2,11 @@ package com.nikohalfkino.rubydung.console.commands;
 
 import com.nikohalfkino.rubydung.RubyDung;
 import com.nikohalfkino.rubydung.console.Command;
+import com.nikohalfkino.rubydung.console.CommandArg;
 import com.nikohalfkino.rubydung.console.Console;
 
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 
 public class ScreenshotCommand implements Command {
@@ -22,11 +24,38 @@ public class ScreenshotCommand implements Command {
     @Override
     public List<String> help() {
         return Arrays.asList(
-                "Usage:",
+                "Usage: screenshot [pano|iso] [scale]",
                 "  screenshot [scale]            - normal screenshot",
                 "  screenshot pano [scale]       - panorama",
                 "  screenshot iso [dir] [scale]  - isometric (dir defaults to NW, scale to 2)",
                 "Scale is a number, optionally with an x: 2 or 2x.");
+    }
+
+    @Override
+    public List<CommandArg> arguments(String[] given) {
+        // the first word is a mode or already the scale ("2" or "2x"), so any word is let through
+        CommandArg first = CommandArg.choice("mode", "pano", "iso")
+                .loose()
+                .optional()
+                .note("pano", "panorama")
+                .note("iso", "isometric view");
+
+        if (given.length == 0) {
+            return Collections.singletonList(first);
+        }
+
+        switch (given[0].toLowerCase()) {
+            case "pano":
+            case "panorama":
+                return Arrays.asList(first, CommandArg.word("scale").optional());
+            case "iso":
+            case "isometric":
+                return Arrays.asList(first,
+                        CommandArg.choice("dir", "NW", "NE", "SW", "SE").loose().optional(),
+                        CommandArg.word("scale").optional());
+            default:
+                return Collections.singletonList(first);
+        }
     }
 
     @Override

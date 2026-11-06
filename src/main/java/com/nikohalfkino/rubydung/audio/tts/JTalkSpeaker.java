@@ -23,6 +23,8 @@ import java.util.regex.Pattern;
  *
  * lines with a note (bah<235,30>) or a pitch marker ([+7], [G4]) switch to sing mode automatically,
  * presets are in JTalkSettings. each marked segment is its own open_jtalk call, played on the same line
+ *
+ * a note whose "phoneme" is a dot (.<200,00>) is a pause: silence for that many ms, nothing is rendered
  */
 public final class JTalkSpeaker {
 
@@ -30,13 +32,17 @@ public final class JTalkSpeaker {
     private static final int QUEUE_CAPACITY = 6;
 
     // inline pitch markers: [+5] [-3] [0] [C4] [G#4] [Bb3]
-    private static final Pattern PITCH_MARKER =
+    // (public so the chat input can highlight exactly what the speaker will parse)
+    public static final Pattern PITCH_MARKER =
             Pattern.compile("\\[([+\\-]?\\d+(?:\\.\\d+)?|[A-Ga-g][#Bb]?\\d?)\\]");
 
     // moonbase alpha note: phoneme<duration-ms,pitch>, e.g. bah<235,30>
     // brackets aren't part of the pattern, a whole phrase sits in one [...] group
-    private static final Pattern SINGING_NOTE =
+    public static final Pattern SINGING_NOTE =
             Pattern.compile("([^\\s\\[\\]<>,]+)<(\\d+),([^\\s\\[\\]<>,]+)>");
+
+    // addresses in a message (http://..., https://..., www....): never read out, they would be spelled letter by letter
+    private static final Pattern LINK = Pattern.compile("(?i)\\b(?:https?://|www\\.)\\S+");
 
     // note letter -> semitones from C
     private static final Map<Character, Integer> NOTE_BASE;
@@ -57,16 +63,27 @@ public final class JTalkSpeaker {
         final boolean sing;
         // -1 for an ordinary segment
         final int durationMs;
+        // a pause: no kana, durationMs of silence
+        final boolean rest;
 
         Segment(String kana, float pitchOffset, boolean sing) {
-            this(kana, pitchOffset, sing, -1);
+            this(kana, pitchOffset, sing, -1, false);
         }
 
         Segment(String kana, float pitchOffset, boolean sing, int durationMs) {
+            this(kana, pitchOffset, sing, durationMs, false);
+        }
+
+        private Segment(String kana, float pitchOffset, boolean sing, int durationMs, boolean rest) {
             this.kana = kana;
             this.pitchOffset = pitchOffset;
             this.sing = sing;
             this.durationMs = durationMs;
+            this.rest = rest;
+        }
+
+        static Segment rest(int durationMs) {
+            return new Segment("", 0.0f, true, durationMs, true);
         }
     }
 
@@ -131,7 +148,9 @@ public final class JTalkSpeaker {
 
     /** no-op if disabled, blank or the queue is full, safe from any thread */
     public void speak(String text) {
-        if (!JTalkSettings.isEnabled() || text == null || text.isBlank()) return;
+        if (!JTalkSettings.isEnabled() || text == null) return;
+        text = LINK.matcher(text).replaceAll(" ").trim();
+        if (text.isEmpty()) return;   // nothing but links
         this.queue.offer(text);   // non-blocking; drops if full
     }
 
@@ -188,6 +207,12 @@ public final class JTalkSpeaker {
         List<Future<Pcm>> jobs = new ArrayList<>();
         List<Segment> jobSegs = new ArrayList<>();   // jobSegs.get(i) is the segment of jobs.get(i)
         for (Segment seg : segments) {
+            if (seg.rest) {
+                // nothing to render, the silence is written in order during playback
+                jobSegs.add(seg);
+                jobs.add(null);
+                continue;
+            }
             if (seg.kana.isBlank()) continue;
             jobSegs.add(seg);
             jobs.add(workers.submit((Callable<Pcm>) () -> render(seg)));
@@ -195,10 +220,25 @@ public final class JTalkSpeaker {
 
         SourceDataLine line = null;
         boolean aborted = false;
+        // pause time from before the first sound, played once the line (and so its format) exists
+        int pendingRestMs = 0;
         try {
             for (int j = 0; j < jobs.size(); j++) {
                 Future<Pcm> job = jobs.get(j);
                 if (!this.running || gen != this.generation.get()) { aborted = true; break; }
+
+                Segment current = jobSegs.get(j);
+                if (current.rest) {
+                    if (line == null) {
+                        pendingRestMs += current.durationMs;
+                    } else if (writeSilence(line, current.durationMs, gen)) {
+                        this.queuedMicros += current.durationMs * 1000L;
+                    } else {
+                        aborted = true;
+                        break;
+                    }
+                    continue;
+                }
 
                 Pcm pcm;
                 try {
@@ -225,6 +265,12 @@ public final class JTalkSpeaker {
                     this.activeLine = line;
                 }
 
+                if (pendingRestMs > 0) {
+                    if (!writeSilence(line, pendingRestMs, gen)) { aborted = true; break; }
+                    this.queuedMicros += pendingRestMs * 1000L;
+                    pendingRestMs = 0;
+                }
+
                 // Mouth cues for this segment, placed after everything already written to the line.
                 this.cues.addAll(Visemes.build(jobSegs.get(j).kana, pcm.millis(), this.queuedMicros));
                 this.queuedMicros += (long) (pcm.millis() * 1000);
@@ -242,7 +288,7 @@ public final class JTalkSpeaker {
                 if (aborted) break;
             }
         } finally {
-            for (Future<Pcm> job : jobs) job.cancel(true);
+            for (Future<Pcm> job : jobs) if (job != null) job.cancel(true);
             if (line != null) {
                 if (aborted || !this.running) line.flush(); else line.drain();
                 line.close();
@@ -250,6 +296,24 @@ public final class JTalkSpeaker {
             this.activeLine = null;
             this.cues.clear();
         }
+    }
+
+    // writes ms of silence (16-bit PCM, which is what open_jtalk writes), false if the utterance was cut off meanwhile
+    private boolean writeSilence(SourceDataLine line, int ms, int gen) {
+        AudioFormat fmt = line.getFormat();
+        int frame = Math.max(1, fmt.getFrameSize());
+        int remaining = (int) Math.round(fmt.getFrameRate() * ms / 1000.0) * frame;
+        byte[] zeros = new byte[Math.max(frame, 4096 - 4096 % frame)];
+
+        while (remaining > 0) {
+            if (!this.running || gen != this.generation.get()) return false;
+            int count = Math.min(zeros.length, remaining);
+            count -= count % frame;
+            if (count <= 0) break;
+            line.write(zeros, 0, count);
+            remaining -= count;
+        }
+        return true;
     }
 
     // text segmentation
@@ -265,7 +329,8 @@ public final class JTalkSpeaker {
         while (notes.find()) {
             foundNote = true;
             String phoneme = notes.group(1).trim();
-            String kana = singingKana(phoneme);
+            boolean pause = isRest(phoneme);
+            String kana = pause ? "" : singingKana(phoneme);
             int durationMs;
             try {
                 durationMs = Integer.parseInt(notes.group(2));
@@ -274,7 +339,11 @@ public final class JTalkSpeaker {
             }
             durationMs = Math.max(1, Math.min(30000, durationMs));
             float pitchOffset = parseSingingPitch(notes.group(3).trim());
-            if (!kana.isBlank()) noteSegments.add(new Segment(kana, pitchOffset, true, durationMs));
+            if (pause) {
+                noteSegments.add(Segment.rest(durationMs));
+            } else if (!kana.isBlank()) {
+                noteSegments.add(new Segment(kana, pitchOffset, true, durationMs));
+            }
         }
         if (foundNote) return noteSegments;
 
@@ -329,18 +398,41 @@ public final class JTalkSpeaker {
         if (SINGING_NOTE.matcher(raw).find()) return true;
         Matcher m = PITCH_MARKER.matcher(raw);
         while (m.find()) {
-            String g = m.group(1);
-            char first = g.charAt(0);
-            if (first == '+' || first == '-' || Character.isDigit(first)) {
-                try {
-                    if (Math.abs(Float.parseFloat(g)) <= JTalkSettings.MAX_PITCH) return true;
-                } catch (NumberFormatException ignored) {
-                }
-            } else if (Character.isDigit(g.charAt(g.length() - 1))) {
-                return true;   // letter, optional accidental, octave digit
-            }
+            if (isSingingMarker(m.group(1))) return true;
         }
         return false;
+    }
+
+    /** a "phoneme" of only dots is a pause, .<200,00> is 200 ms of silence (the pitch is ignored) */
+    public static boolean isRest(String phoneme) {
+        return phoneme != null && phoneme.matches("\\.+");
+    }
+
+    /** whether the inside of a [..] pitch marker counts as a note: a number in range or a note name + octave, a bare [a] doesn't */
+    public static boolean isSingingMarker(String g) {
+        if (g == null || g.isEmpty()) return false;
+        char first = g.charAt(0);
+        if (first == '+' || first == '-' || Character.isDigit(first)) {
+            try {
+                return Math.abs(Float.parseFloat(g)) <= JTalkSettings.MAX_PITCH;
+            } catch (NumberFormatException ignored) {
+                return false;
+            }
+        }
+        return Character.isDigit(g.charAt(g.length() - 1));   // letter, optional accidental, octave digit
+    }
+
+    private static final Pattern NOTE_NAME = Pattern.compile("[A-Ga-g][#Bb]?\\d?");
+
+    /** whether the pitch of a note (the 30 in bah<235,30>) is something parseSingingPitch understands: a number or a note name */
+    public static boolean isValidPitch(String value) {
+        if (value == null || value.isEmpty()) return false;
+        try {
+            Float.parseFloat(value);
+            return true;
+        } catch (NumberFormatException ignored) {
+            return NOTE_NAME.matcher(value).matches();
+        }
     }
 
     private static void addSegment(String raw, int from, int to, float offset, List<Segment> out) {

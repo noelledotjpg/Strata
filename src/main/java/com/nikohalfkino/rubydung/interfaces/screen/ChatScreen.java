@@ -2,13 +2,24 @@ package com.nikohalfkino.rubydung.interfaces.screen;
 
 import com.nikohalfkino.rubydung.RubyDung;
 import com.nikohalfkino.rubydung.console.ChatLog;
+import com.nikohalfkino.rubydung.console.ChatText;
+import com.nikohalfkino.rubydung.console.CommandCompleter;
+import com.nikohalfkino.rubydung.console.Console;
+import com.nikohalfkino.rubydung.console.CommandSyntax;
+import com.nikohalfkino.rubydung.interfaces.ChatActions;
+import com.nikohalfkino.rubydung.interfaces.ChatImages;
+import com.nikohalfkino.rubydung.interfaces.ChatRender;
 import com.nikohalfkino.rubydung.interfaces.FrameMouthProvider;
+import com.nikohalfkino.rubydung.interfaces.ChatInputSyntax;
 import com.nikohalfkino.rubydung.interfaces.FramePanelScreen;
+import com.nikohalfkino.rubydung.interfaces.GameFrame;
 import com.nikohalfkino.rubydung.interfaces.Gui2D;
+import com.nikohalfkino.rubydung.interfaces.SuggestionBox;
 import com.nikohalfkino.rubydung.interfaces.widget.PanelSection;
 import com.nikohalfkino.rubydung.interfaces.widget.Anchor;
 import com.nikohalfkino.rubydung.interfaces.widget.BevelBox;
 import com.nikohalfkino.rubydung.interfaces.widget.TextField;
+import com.nikohalfkino.rubydung.interfaces.widget.Tooltip;
 import com.nikohalfkino.rubydung.interfaces.widget.UserList;
 import com.nikohalfkino.rubydung.render.Font;
 import com.nikohalfkino.rubydung.util.GameSettings;
@@ -57,17 +68,31 @@ public class ChatScreen extends FramePanelScreen implements FrameMouthProvider {
     // sunken backdrop of the input line (the text field is drawn on top)
     private final BevelBox inputBox;
 
+    // "Click to view" / "Click to copy" by the mouse, drawn last so it covers the conversation
+    private final Tooltip tooltip = new Tooltip();
+
     // right-hand user list, fills the panel section
     private final UserList userList;
 
     private int scrollLines = 0;
     private int historyIndex = -1;
 
+    // colours and completes ".commands"
+    private final CommandSyntax syntax;
+    private final CommandCompleter completer;
+
     public ChatScreen(RubyDung game) {
         super(game);
         this.chat = game.getChatLog();
         this.chat.setNick(GameSettings.getUsername());
         Keyboard.enableRepeatEvents(true);
+
+        Console console = game.getConsole();
+        this.syntax = new CommandSyntax(console::find, console::commands);
+        this.input.setHighlighter(new ChatInputSyntax(this.syntax));
+        this.completer = new CommandCompleter(this.input, this.syntax, ".");
+
+        this.tooltip.setTint(getFrameTint()).setScale(CHAT_SCALE);
 
         this.inputBox = add(new BevelBox()
                 .setTint(getFrameTint())
@@ -142,6 +167,15 @@ public class ChatScreen extends FramePanelScreen implements FrameMouthProvider {
             return true;
         }
 
+        if (key == KeyMap.TAB) {
+            boolean back = Keyboard.isKeyDown(Keyboard.KEY_LSHIFT)
+                    || Keyboard.isKeyDown(Keyboard.KEY_RSHIFT);
+            if (ChatInputSyntax.isCommand(this.input.getText())) {
+                this.completer.tab(back ? -1 : 1);
+            }
+            return true;
+        }
+
         if (key == KeyMap.UP) {
             navigateHistory(1);
             return true;
@@ -187,6 +221,8 @@ public class ChatScreen extends FramePanelScreen implements FrameMouthProvider {
     }
 
     private void submit() {
+        this.completer.reset();
+
         String text = this.input.getText().trim();
 
         this.input.clear();
@@ -199,7 +235,7 @@ public class ChatScreen extends FramePanelScreen implements FrameMouthProvider {
 
         this.chat.remember(text);
 
-        if (text.startsWith(".")) {
+        if (ChatInputSyntax.isCommand(text)) {
             runCommand(text.substring(1).trim());
         } else {
             this.chat.say(text);
@@ -238,8 +274,10 @@ public class ChatScreen extends FramePanelScreen implements FrameMouthProvider {
 
         Gui2D.begin(this.game.getWidth(), this.game.getHeight());
 
-        drawConversation(font);
+        drawConversation(font, mouseX, mouseY);
         drawInputLine(font, mouseX, mouseY);
+        drawSuggestions(font);
+        drawLinkTooltip(font, mouseX, mouseY);
 
         Gui2D.end();
     }
@@ -255,19 +293,152 @@ public class ChatScreen extends FramePanelScreen implements FrameMouthProvider {
         );
     }
 
+    private static final int IMAGE_MAX_HEIGHT = 240;
+    private static final int IMAGE_MAX_WIDTH = 480;
+    private static final int NOTE_COLOR = 0x8899AA;
+    // a picture's drop shadow is offset by one pixel of the text and drawn under it
+    private static final int IMAGE_SHADOW = (int) CHAT_SCALE;
+    private static final float IMAGE_SHADOW_ALPHA = 0.8F;
+    private static final long COPIED_NANOS = 1_200_000_000L;
+
+    private enum Row { TEXT, IMAGE, NOTE }
+
     private static final class VisualLine {
         final ChatLog.Line source;
-        final boolean first;
-        final String text;
+        final Row row;
 
-        VisualLine(ChatLog.Line source, boolean first, String text) {
+        // TEXT: whether the mark ("*** " or "<nick> ") goes in front, and which part of source.text this is
+        final boolean marked;
+        final int start;
+        final int end;
+        // the text the offsets point into (source.text with picture links shortened)
+        final ChatRender.Shown shown;
+
+        // IMAGE: one row-high slice of the picture, NOTE: placeholder text
+        final String url;
+        final ChatImages.Entry image;
+        final int slice;
+        final int slices;
+        final int imageWidth;
+        final int imageHeight;
+        final String note;
+
+        private VisualLine(ChatLog.Line source, Row row, boolean marked, int start, int end,
+                           ChatRender.Shown shown, String url,
+                           ChatImages.Entry image, int slice, int slices, int imageWidth, int imageHeight,
+                           String note) {
             this.source = source;
-            this.first = first;
-            this.text = text;
+            this.row = row;
+            this.marked = marked;
+            this.start = start;
+            this.end = end;
+            this.shown = shown;
+            this.url = url;
+            this.image = image;
+            this.slice = slice;
+            this.slices = slices;
+            this.imageWidth = imageWidth;
+            this.imageHeight = imageHeight;
+            this.note = note;
+        }
+
+        static VisualLine text(ChatLog.Line source, ChatRender.Shown shown, boolean marked, int start, int end) {
+            return new VisualLine(source, Row.TEXT, marked, start, end, shown, null, null, 0, 0, 0, 0, null);
+        }
+
+        static VisualLine slice(ChatLog.Line source, String url, ChatImages.Entry image, int slice, int slices,
+                                int width, int height) {
+            return new VisualLine(source, Row.IMAGE, false, 0, 0, null, url, image, slice, slices, width, height, null);
+        }
+
+        static VisualLine note(ChatLog.Line source, String url, String note) {
+            return new VisualLine(source, Row.NOTE, false, 0, 0, null, url, null, 0, 0, 0, 0, note);
         }
     }
 
-    private void drawConversation(Font font) {
+    /** a clickable part drawn this frame */
+    private static final class Hit {
+        final int x;
+        final int y;
+        final int width;
+        final int height;
+        final ChatText.Kind kind;
+        final String value;
+        // the text part it belongs to, null for a picture
+        final ChatRender.Part part;
+
+        Hit(int x, int y, int width, int height, ChatText.Kind kind, String value, ChatRender.Part part) {
+            this.x = x;
+            this.y = y;
+            this.width = width;
+            this.height = height;
+            this.kind = kind;
+            this.value = value;
+            this.part = part;
+        }
+
+        boolean contains(int mouseX, int mouseY) {
+            return mouseX >= this.x && mouseX < this.x + this.width
+                    && mouseY >= this.y && mouseY < this.y + this.height;
+        }
+    }
+
+    // rebuilt by drawConversation every frame
+    private final List<Hit> hits = new ArrayList<>();
+
+    // the copyable part that was just clicked, shown as "Copied!" for a moment
+    private String copiedValue = null;
+    private long copiedAt = 0L;
+
+    /** the rows one line takes, top to bottom: its text, then the pictures linked in it */
+    private List<VisualLine> layoutLine(Font font, ChatLog.Line line, int textWidth) {
+        List<VisualLine> rows = new ArrayList<>();
+
+        int prefixWidth = textWidth(font, markOf(line));
+        boolean everyLine = marksEveryLine(line);
+
+        // a link to a picture shows as its file name, the picture itself follows under the text
+        ChatRender.Shown shown = ChatRender.show(line, false);
+
+        List<int[]> pieces = ChatRender.wrap(font, shown.text, textWidth - prefixWidth,
+                everyLine ? textWidth - prefixWidth : textWidth, CHAT_SCALE);
+
+        for (int p = 0; p < pieces.size(); p++) {
+            rows.add(VisualLine.text(line, shown, p == 0 || everyLine, pieces.get(p)[0], pieces.get(p)[1]));
+        }
+
+        // pictures line up with the text, so they get what is left of the width
+        int maxWidth = Math.min(IMAGE_MAX_WIDTH, textWidth - prefixWidth);
+
+        for (String url : line.images) {
+            ChatImages.Entry image = ChatImages.get(url);
+
+            if (!image.isReady() || maxWidth < LINE_HEIGHT) {
+                rows.add(VisualLine.note(line, url, image.isFailed() ? "[image unavailable]" : "[loading image...]"));
+                continue;
+            }
+
+            double scale = Math.min(1.0, Math.min(maxWidth / (double) image.width(),
+                    IMAGE_MAX_HEIGHT / (double) image.height()));
+            int w = Math.max(1, (int) Math.round(image.width() * scale));
+            int h = Math.max(1, (int) Math.round(image.height() * scale));
+            int slices = (h + LINE_HEIGHT - 1) / LINE_HEIGHT;
+
+            for (int i = 0; i < slices; i++) {
+                rows.add(VisualLine.slice(line, url, image, i, slices, w, h));
+            }
+        }
+
+        return rows;
+    }
+
+    private void drawConversation(Font font, int mouseX, int mouseY) {
+        // last frame's hits say what the mouse is over: the whole link lights up, not just its row
+        Hit over = hitAt(mouseX, mouseY);
+        ChatRender.Part hovered = over == null ? null : over.part;
+
+        this.hits.clear();
+
         int x = this.layout.viewX;
         int y = this.layout.viewY;
         int w = this.layout.viewWidth;
@@ -300,20 +471,12 @@ public class ChatScreen extends FramePanelScreen implements FrameMouthProvider {
 
         int needed = capacity + this.scrollLines;
 
+        // newest first, and the rows of one line bottom to top, so index 0 is the bottom row
         for (int i = all.size() - 1; i >= 0 && visual.size() < needed; i--) {
-            ChatLog.Line line = all.get(i);
+            List<VisualLine> rows = layoutLine(font, all.get(i), textWidth);
 
-            int prefixWidth = textWidth(font, markOf(line));
-
-            List<String> pieces = wrap(
-                    font,
-                    line.text,
-                    textWidth - prefixWidth,
-                    textWidth
-            );
-
-            for (int p = pieces.size() - 1; p >= 0; p--) {
-                visual.add(new VisualLine(line, p == 0, pieces.get(p)));
+            for (int r = rows.size() - 1; r >= 0; r--) {
+                visual.add(rows.get(r));
             }
         }
 
@@ -325,35 +488,105 @@ public class ChatScreen extends FramePanelScreen implements FrameMouthProvider {
         int baseY = y + h - PAD - LINE_HEIGHT;
         int end = Math.min(visual.size(), this.scrollLines + capacity);
 
+        // shadows first: a slice's shadow reaches into the row below, which would cover that slice
+        for (int i = this.scrollLines; i < end; i++) {
+            VisualLine v = visual.get(i);
+
+            if (v.row == Row.IMAGE) {
+                int lineY = baseY - (i - this.scrollLines) * LINE_HEIGHT;
+                drawImageShadow(v, x + PAD + textWidth(font, markOf(v.source)), lineY);
+            }
+        }
+
         for (int i = this.scrollLines; i < end; i++) {
             VisualLine v = visual.get(i);
 
             int lineY = baseY - (i - this.scrollLines) * LINE_HEIGHT;
             int lineX = x + PAD;
 
-            if (!v.first) {
-                drawText(font, v.text, lineX, lineY, textColorOf(v.source));
-                continue;
+            switch (v.row) {
+                case TEXT:
+                    drawTextRow(font, v, lineX, lineY, hovered);
+                    break;
+                case IMAGE:
+                    drawImageRow(v, lineX + textWidth(font, markOf(v.source)), lineY);
+                    break;
+                default:
+                    drawText(font, v.note, lineX + textWidth(font, markOf(v.source)), lineY, NOTE_COLOR);
+                    break;
             }
-
-            int markX = lineX;
-
-            String mark = markOf(v.source);
-
-            int markColor = v.source.kind == ChatLog.Kind.MESSAGE
-                    ? nickColor(v.source.nick)
-                    : NOTICE_MARK_COLOR;
-
-            drawText(font, mark, markX, lineY, markColor);
-
-            drawText(
-                    font,
-                    v.text,
-                    markX + textWidth(font, mark),
-                    lineY,
-                    textColorOf(v.source)
-            );
         }
+    }
+
+    private void drawTextRow(Font font, VisualLine v, int lineX, int lineY, ChatRender.Part hovered) {
+        int textX = lineX;
+
+        if (v.marked) {
+            String mark = markOf(v.source);
+            drawText(font, mark, lineX, lineY, markColorOf(v.source));
+            textX += textWidth(font, mark);
+        }
+
+        ChatRender.drawPiece(font, v.shown, v.start, v.end, textX, lineY, textColorOf(v.source),
+                CHAT_SCALE, hovered,
+                (hx, hy, hw, hh, part) -> this.hits.add(new Hit(hx, hy, hw, hh, part.kind, part.value, part)));
+    }
+
+    /** the black copy of one slice, down and to the right of it like the text's shadow */
+    private void drawImageShadow(VisualLine v, int imageX, int lineY) {
+        int top = v.slice * LINE_HEIGHT;
+        int sliceHeight = Math.min(LINE_HEIGHT, v.imageHeight - top);
+
+        Gui2D.fillRect(imageX + IMAGE_SHADOW, lineY + IMAGE_SHADOW, v.imageWidth, sliceHeight,
+                0.0F, 0.0F, 0.0F, IMAGE_SHADOW_ALPHA);
+    }
+
+    private void drawImageRow(VisualLine v, int imageX, int lineY) {
+        int top = v.slice * LINE_HEIGHT;
+        int sliceHeight = Math.min(LINE_HEIGHT, v.imageHeight - top);
+
+        ChatImages.drawSlice(v.image, imageX, lineY, v.imageWidth, sliceHeight,
+                top / (float) v.imageHeight, (top + sliceHeight) / (float) v.imageHeight);
+
+        // clicking the picture opens it
+        this.hits.add(new Hit(imageX, lineY, v.imageWidth, sliceHeight, ChatText.Kind.LINK, v.url, null));
+    }
+
+    private Hit hitAt(int mouseX, int mouseY) {
+        for (Hit hit : this.hits) {
+            if (hit.contains(mouseX, mouseY)) {
+                return hit;
+            }
+        }
+        return null;
+    }
+
+    private void activate(Hit hit) {
+        if (hit.kind == ChatText.Kind.LINK) {
+            ChatActions.openLink(hit.value);
+        } else if (ChatActions.copy(hit.value)) {
+            this.copiedValue = hit.value;
+            this.copiedAt = System.nanoTime();
+        }
+    }
+
+    /** "Click to view" by the mouse over a link or picture, "Click to copy" over a copyable part */
+    private void drawLinkTooltip(Font font, int mouseX, int mouseY) {
+        Hit hit = hitAt(mouseX, mouseY);
+
+        if (hit == null) {
+            this.tooltip.hide();
+        } else if (hit.kind == ChatText.Kind.COPY) {
+            boolean justCopied = hit.value.equals(this.copiedValue)
+                    && System.nanoTime() - this.copiedAt < COPIED_NANOS;
+
+            this.tooltip.show(justCopied ? "Copied!" : "Click to copy", justCopied ? 0x77FF77 : 0xFFFFFF);
+        } else {
+            this.tooltip.show("Click to view", 0xFFFFFF);
+        }
+
+        this.tooltip.setScreenSize(this.game.getWidth(), this.game.getHeight());
+        this.tooltip.render(font, mouseX, mouseY);
     }
 
     private int inputX() {
@@ -381,6 +614,12 @@ public class ChatScreen extends FramePanelScreen implements FrameMouthProvider {
 
         int x = inputX();
         int y = inputY();
+
+        Hit hit = hitAt(mouseX, mouseY);
+        if (hit != null) {
+            activate(hit);
+            return;
+        }
 
         boolean onInput = mouseX >= this.layout.viewX
                 && mouseX < this.layout.viewX + this.layout.viewWidth
@@ -413,6 +652,24 @@ public class ChatScreen extends FramePanelScreen implements FrameMouthProvider {
         this.input.render(font, x, y, 0xFFFFFF, prompt(), width);
     }
 
+    /** matches for the word at the cursor in a box above the input line, plus the command's usage */
+    private void drawSuggestions(Font font) {
+        if (!ChatInputSyntax.isCommand(this.input.getText())) {
+            return;
+        }
+
+        CommandCompleter.Popup popup = this.completer.popup();
+        if (popup == null) {
+            return;
+        }
+
+        // just above the input box's own bevel
+        int edge = boxY() - 2 * GameFrame.UI_SCALE - 2;
+
+        SuggestionBox.draw(font, popup, this.layout.viewX, edge, this.layout.viewWidth,
+                true, getFrameTint(), CHAT_SCALE);
+    }
+
     private String prompt() {
         return "> ";
     }
@@ -421,19 +678,31 @@ public class ChatScreen extends FramePanelScreen implements FrameMouthProvider {
         return this.layout.viewWidth - PAD * 2;
     }
 
-    private static String markOf(ChatLog.Line line) {
+    /** "<nick> " for messages, "*** " for notices (also used by ChatHud) */
+    public static String markOf(ChatLog.Line line) {
         return line.kind == ChatLog.Kind.MESSAGE
                 ? "<" + line.nick + "> "
                 : "*** ";
     }
 
-    private static int textColorOf(ChatLog.Line line) {
+    /** notices carry their "*** " on every wrapped line, so the whole text sits to the right of it */
+    public static boolean marksEveryLine(ChatLog.Line line) {
+        return line.kind == ChatLog.Kind.NOTICE;
+    }
+
+    public static int textColorOf(ChatLog.Line line) {
         return line.kind == ChatLog.Kind.MESSAGE
                 ? TEXT_COLOR
                 : NOTICE_TEXT_COLOR;
     }
 
-    private static int nickColor(String nick) {
+    public static int markColorOf(ChatLog.Line line) {
+        return line.kind == ChatLog.Kind.MESSAGE
+                ? nickColor(line.nick)
+                : NOTICE_MARK_COLOR;
+    }
+
+    public static int nickColor(String nick) {
         return NICK_COLORS[
                 Math.floorMod(
                         nick == null ? 0 : nick.hashCode(),
@@ -460,47 +729,5 @@ public class ChatScreen extends FramePanelScreen implements FrameMouthProvider {
         }
 
         return text.substring(0, end);
-    }
-
-    private static List<String> wrap(Font font, String text, int firstWidth, int restWidth) {
-        List<String> lines = new ArrayList<>();
-        StringBuilder current = new StringBuilder();
-
-        int limit = Math.max(1, firstWidth);
-
-        for (String word : text.split(" ", -1)) {
-            String candidate = current.length() == 0
-                    ? word
-                    : current + " " + word;
-
-            if (textWidth(font, candidate) <= limit) {
-                current.setLength(0);
-                current.append(candidate);
-                continue;
-            }
-
-            if (current.length() > 0) {
-                lines.add(current.toString());
-                current.setLength(0);
-                limit = Math.max(1, restWidth);
-            }
-
-            for (int i = 0; i < word.length(); i++) {
-                char c = word.charAt(i);
-
-                if (current.length() > 0
-                        && textWidth(font, current.toString() + c) > limit) {
-                    lines.add(current.toString());
-                    current.setLength(0);
-                    limit = Math.max(1, restWidth);
-                }
-
-                current.append(c);
-            }
-        }
-
-        lines.add(current.toString());
-
-        return lines;
     }
 }

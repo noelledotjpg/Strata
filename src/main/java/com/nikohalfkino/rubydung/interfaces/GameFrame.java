@@ -120,8 +120,6 @@ public final class GameFrame {
     private float tintG = 1.0F;
     private float tintB = 1.0F;
 
-    private ByteBuffer sparseMask;
-    private ByteBuffer checkerMask;
     private float openness = 0.0F;
     private long lastNanos = 0L;
 
@@ -288,34 +286,11 @@ public final class GameFrame {
             return;
         }
 
-        if (this.sparseMask == null) {
-            this.sparseMask = buildMask(false);
-            this.checkerMask = buildMask(true);
-        }
-
         // Gui2D.begin() enables alpha blending, so DARKEN_ALPHA works as the pixels' opacity.
+        // Sparser pattern for the first steps of the opening animation.
         Gui2D.begin(viewWidth, viewHeight);
-
-        glEnable(GL_POLYGON_STIPPLE);
-        glPolygonStipple(step <= STEPS / 2 ? this.sparseMask : this.checkerMask);
-        Gui2D.fillRect(0, 0, viewWidth, viewHeight, 0.0F, 0.0F, 0.0F, DARKEN_ALPHA);
-        glDisable(GL_POLYGON_STIPPLE);
-
+        Dither.fill(0, 0, viewWidth, viewHeight, DARKEN_ALPHA, step <= STEPS / 2);
         Gui2D.end();
-    }
-
-    // 32x32 stipple in 2x2-pixel cells (UI_SCALE = 2): a checkerboard, or a quarter filled for the first steps
-    private static ByteBuffer buildMask(boolean checker) {
-        ByteBuffer mask = BufferUtils.createByteBuffer(128);
-        for (int row = 0; row < 32; row++) {
-            boolean evenBand = (row / UI_SCALE) % 2 == 0;
-            byte value = evenBand ? (byte) 0xCC : (checker ? (byte) 0x33 : (byte) 0x00);
-            for (int i = 0; i < 4; i++) {
-                mask.put(value);
-            }
-        }
-        mask.flip();
-        return mask;
     }
 
     public boolean isFullyOpen() {

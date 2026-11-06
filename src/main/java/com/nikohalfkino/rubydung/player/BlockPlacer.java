@@ -266,7 +266,7 @@ final class BlockPlacer {
         } else {
             HandHud.swingCurrent(HandHud.Action.PLACE);    // click: cancels the running swing
         }
-        SoundEffects.playRandom("tile_place", 3);
+        SoundEffects.playTilePlace(this.ctx.selectedTile);
         this.buildBudget = Math.max(0.0, this.buildBudget - 1.0);
         this.ctx.acted = true;
 

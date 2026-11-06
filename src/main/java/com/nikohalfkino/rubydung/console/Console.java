@@ -19,6 +19,8 @@ public class Console {
     private final List<String> commandHistory = new ArrayList<>();
 
     private final TextField input = new TextField();
+    private final CommandSyntax syntax;
+    private final CommandCompleter completer;
     private int historyIndex = -1;
     private boolean open = false;
 
@@ -43,6 +45,11 @@ public class Console {
         register(new SeaCommand());
         register(new VectorsCommand());
         register(new ChunkBordersCommand());
+
+        // the input line is colourised and tab-completed like the chat's ".commands"
+        this.syntax = new CommandSyntax(this::find, this::commands);
+        this.input.setHighlighter(this.syntax::highlight);
+        this.completer = new CommandCompleter(this.input, this.syntax, "");
 
         println("Type 'help' for a list of commands.");
     }
@@ -76,6 +83,7 @@ public class Console {
 
         if (open) {
             this.input.clear();
+            this.completer.reset();
             this.historyIndex = -1;
             Mouse.setGrabbed(false);
         } else {
@@ -93,7 +101,8 @@ public class Console {
             return;
         }
 
-        this.log.add(line);
+        // the console can't show clickable parts, so it gets the plain text
+        this.log.add(ChatText.strip(line));
         if (this.log.size() > MAX_LOG_LINES) {
             this.log.remove(0);
         }
@@ -111,6 +120,11 @@ public class Console {
         return this.input;
     }
 
+    /** matches for the word being typed, for the console screen to draw */
+    public CommandCompleter getCompleter() {
+        return this.completer;
+    }
+
     public void keyTyped(int key, char character) {
         if (key == KeyMap.ESC) {
             setOpen(false);
@@ -119,6 +133,13 @@ public class Console {
 
         if (key == KeyMap.ENTER || key == KeyMap.NUMPAD_ENTER) {
             submit();
+            return;
+        }
+
+        if (key == KeyMap.TAB) {
+            boolean back = Keyboard.isKeyDown(Keyboard.KEY_LSHIFT)
+                    || Keyboard.isKeyDown(Keyboard.KEY_RSHIFT);
+            this.completer.tab(back ? -1 : 1);
             return;
         }
 
@@ -160,6 +181,7 @@ public class Console {
     private void submit() {
         String line = this.input.getText().trim();
         this.input.clear();
+        this.completer.reset();
         this.historyIndex = -1;
 
         if (line.isEmpty()) {

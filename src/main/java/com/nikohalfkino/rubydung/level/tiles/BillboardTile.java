@@ -184,7 +184,7 @@ public abstract class BillboardTile extends Tile {
                                        float worldX, float worldY, float worldZ,
                                        float cosYaw, float sinYaw, float scale) {
         renderBillboardBatched(tessellator, level, x, y, z, totalAtlasSlots,
-                worldX, worldY, worldZ, cosYaw, sinYaw, scale, -1.0F, UnderwaterTint.pack(level, x, y, z));
+                worldX, worldY, worldZ, cosYaw, sinYaw, scale, -1.0F, UnderwaterTint.packSprite(level, x, y, z));
     }
 
     public void renderBillboardBatched(Tessellator tessellator, Level level, int x, int y, int z, int totalAtlasSlots,
@@ -225,7 +225,7 @@ public abstract class BillboardTile extends Tile {
         boolean emissive = emitsLight();
         float sky = emissive ? 1.0F : level.getSkyLight(x, y, z);
         float block = emissive ? 1.0F : level.getBlockLight(x, y, z);
-        float alpha = UnderwaterTint.pack(level, x, y, z);
+        float alpha = UnderwaterTint.packSprite(level, x, y, z);
 
         int slot = getAtlasSlot(FACE_NORTH);
         float extent = getAtlasExtent();
@@ -253,7 +253,7 @@ public abstract class BillboardTile extends Tile {
                                       float worldX, float worldY, float worldZ,
                                       float cosYaw, float sinYaw, float scale) {
         float brightness = spriteBrightness(level, x, y, z);
-        float alpha = UnderwaterTint.pack(level, x, y, z);
+        float alpha = UnderwaterTint.packSprite(level, x, y, z);
 
         int slot = getAtlasSlot(FACE_NORTH);
         float extent = getAtlasExtent();

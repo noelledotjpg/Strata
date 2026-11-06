@@ -1,5 +1,6 @@
 package com.nikohalfkino.rubydung.interfaces.widget;
 
+import com.nikohalfkino.rubydung.audio.SoundEffects;
 import com.nikohalfkino.rubydung.interfaces.Gui2D;
 import com.nikohalfkino.rubydung.render.Font;
 import com.nikohalfkino.rubydung.util.KeyMap;
@@ -11,6 +12,15 @@ import java.awt.Toolkit;
 import java.awt.datatransfer.StringSelection;
 
 public class TextField {
+
+    /** colours the text as it's drawn, e.g. for syntax highlighting */
+    public interface Highlighter {
+
+        /** one RGB colour per character of text, -1 = the normal colour (may be shorter than text, the rest is normal) */
+        int[] colors(String text, int cursor);
+    }
+
+    private Highlighter highlighter;
 
     private final StringBuilder text = new StringBuilder();
     private int maxLength = Integer.MAX_VALUE;
@@ -127,7 +137,7 @@ public class TextField {
         String before = this.text.toString();
         boolean handled = handleKey(key, character);
         if (!before.contentEquals(this.text)) {
-            UiSounds.keyPress();
+            SoundEffects.playKey("key_press", key);
         }
         return handled;
     }
@@ -292,6 +302,12 @@ public class TextField {
         this.selectionAnchor = this.cursorPosition;
     }
 
+    /** null = plain text */
+    public TextField setHighlighter(Highlighter highlighter) {
+        this.highlighter = highlighter;
+        return this;
+    }
+
     public boolean hasSelection() {
         return this.cursorPosition != this.selectionAnchor;
     }
@@ -382,7 +398,7 @@ public class TextField {
             );
         }
 
-        font.drawString(prefix + visibleText, x, y, color);
+        drawVisible(font, x, y, color, prefix, visibleText);
 
         boolean showCursor = (System.currentTimeMillis() / 400L) % 2 == 0;
 
@@ -393,5 +409,50 @@ public class TextField {
 
             font.drawString("_", cursorX, y, color);
         }
+    }
+
+    // the prefix in the normal colour, then the visible text in runs of one colour each
+    private void drawVisible(Font font, int x, int y, int color, String prefix, String visibleText) {
+        int[] colors = null;
+
+        if (this.highlighter != null) {
+            try {
+                colors = this.highlighter.colors(this.text.toString(), this.cursorPosition);
+            } catch (RuntimeException e) {
+                colors = null;   // a broken highlighter must not break typing
+            }
+        }
+
+        if (colors == null) {
+            font.drawString(prefix + visibleText, x, y, color);
+            return;
+        }
+
+        font.drawString(prefix, x, y, color);
+
+        int runStart = 0;
+
+        for (int i = 1; i <= visibleText.length(); i++) {
+            if (i < visibleText.length()
+                    && colorAt(colors, this.scrollPosition + i, color)
+                    == colorAt(colors, this.scrollPosition + runStart, color)) {
+                continue;
+            }
+
+            if (i > runStart) {
+                font.drawString(
+                        visibleText.substring(runStart, i),
+                        x + font.width(prefix + visibleText.substring(0, runStart)),
+                        y,
+                        colorAt(colors, this.scrollPosition + runStart, color)
+                );
+            }
+
+            runStart = i;
+        }
+    }
+
+    private static int colorAt(int[] colors, int index, int normal) {
+        return index >= 0 && index < colors.length && colors[index] >= 0 ? colors[index] : normal;
     }
 }

@@ -180,12 +180,28 @@ class LevelLighting {
                 int nz = z + dz;
                 // lightDepths holds the height of each column's topmost light blocker.
                 if (nx < 0 || nz < 0 || nx >= width || nz >= length
-                        || this.lightDepths[nx + nz * width] <= y) {
+                        || (this.lightDepths[nx + nz * width] <= y && isSidewaysPathClear(x, y, z, dx, dz))) {
                     open++;
                 }
             }
         }
         return open / (float) total;
+    }
+
+    // whether sky light can scatter sideways from the column dx, dz away to this cell: no light-blocking cell on the straight line between them
+    private boolean isSidewaysPathClear(int x, int y, int z, int dx, int dz) {
+        int steps = Math.max(Math.abs(dx), Math.abs(dz));
+        for (int i = 1; i <= steps; i++) {
+            int cx = x + Math.round(dx * i / (float) steps);
+            int cz = z + Math.round(dz * i / (float) steps);
+            if (cx < 0 || cz < 0 || cx >= this.level.width || cz >= this.level.height) {
+                return true;
+            }
+            if (blocksBlockLight(cx, y, cz)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     // sky light from this cell's own column only, ignoring neighbours
@@ -384,13 +400,86 @@ class LevelLighting {
 
                 float t     = 1.0F - (float) Math.sqrt(distSq) / radius;
                 int   value = (int) (t * t * 255.0F + 0.5F);
-                if (value > 0) {
+                // The cell is still queued when it is in shadow, so the spreading carries on past it, but it only receives light
+                // if the source can actually see it: otherwise light that wrapped around the end of a wall would be as bright
+                // behind the wall as in front of it, because the brightness only depends on the straight-line distance.
+                if (value > 0 && hasLineOfSight(source.x, source.y, source.z, wx, wy, wz)) {
                     storeLight(wx, wy, wz, value);
                 }
 
                 this.lightQueue[tail++] = next;
             }
         }
+    }
+
+    // whether a straight line from the centre of the cell (sx, sy, sz) to the centre of the cell (tx, ty, tz) passes only through
+    // cells that let light through (the two end cells themselves aren't tested). A line that runs exactly along an edge or
+    // corner between cells needs all the cells around it to be open, so light can't squeeze between two diagonal walls
+    private boolean hasLineOfSight(int sx, int sy, int sz, int tx, int ty, int tz) {
+        int dx = tx - sx;
+        int dy = ty - sy;
+        int dz = tz - sz;
+        int adx = Math.abs(dx);
+        int ady = Math.abs(dy);
+        int adz = Math.abs(dz);
+        if (adx + ady + adz <= 1) {
+            return true;
+        }
+
+        int stepX = Integer.signum(dx);
+        int stepY = Integer.signum(dy);
+        int stepZ = Integer.signum(dz);
+
+        // the line runs from t = 0 (centre of the source) to t = 1 (centre of the target); tMax is where it next leaves
+        // the current cell along each axis, tDelta is how much t one more cell takes
+        double tDeltaX = adx == 0 ? Double.MAX_VALUE : 1.0 / adx;
+        double tDeltaY = ady == 0 ? Double.MAX_VALUE : 1.0 / ady;
+        double tDeltaZ = adz == 0 ? Double.MAX_VALUE : 1.0 / adz;
+        double tMaxX = adx == 0 ? Double.MAX_VALUE : 0.5 / adx;
+        double tMaxY = ady == 0 ? Double.MAX_VALUE : 0.5 / ady;
+        double tMaxZ = adz == 0 ? Double.MAX_VALUE : 0.5 / adz;
+
+        int x = sx;
+        int y = sy;
+        int z = sz;
+
+        for (int guard = adx + ady + adz; guard >= 0; guard--) {
+            double next = Math.min(tMaxX, Math.min(tMaxY, tMaxZ));
+            int tied = 0;
+            if (tMaxX - next < 1.0E-9) tied |= 1;
+            if (tMaxY - next < 1.0E-9) tied |= 2;
+            if (tMaxZ - next < 1.0E-9) tied |= 4;
+
+            // leaving through an edge or corner: the cells beside it count as well
+            for (int sub = (tied - 1) & tied; sub > 0; sub = (sub - 1) & tied) {
+                if (blocksBlockLight(x + ((sub & 1) != 0 ? stepX : 0),
+                        y + ((sub & 2) != 0 ? stepY : 0),
+                        z + ((sub & 4) != 0 ? stepZ : 0))) {
+                    return false;
+                }
+            }
+
+            if ((tied & 1) != 0) {
+                x += stepX;
+                tMaxX += tDeltaX;
+            }
+            if ((tied & 2) != 0) {
+                y += stepY;
+                tMaxY += tDeltaY;
+            }
+            if ((tied & 4) != 0) {
+                z += stepZ;
+                tMaxZ += tDeltaZ;
+            }
+
+            if (x == tx && y == ty && z == tz) {
+                return true;
+            }
+            if (blocksBlockLight(x, y, z)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private void storeLight(int x, int y, int z, int value) {

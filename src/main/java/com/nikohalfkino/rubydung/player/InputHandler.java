@@ -14,6 +14,7 @@ import com.nikohalfkino.rubydung.util.KeyBinding;
 import com.nikohalfkino.rubydung.util.KeyMap;
 import org.lwjgl.input.Keyboard;
 import org.lwjgl.input.Mouse;
+import java.util.Locale;
 
 public class InputHandler {
 
@@ -58,11 +59,29 @@ public class InputHandler {
         Player player = this.game.getPlayer();
         boolean ctrlHeld = KeyBinding.FLY_SPEED_MODIFIER.isDown() || KeyMap.isDown(KeyMap.RCONTROL);
 
-        if (ctrlHeld && (player.flying || player.noClip)) {
+        PlayerCamera camera = this.game.hasWorld() ? this.game.getGameRenderer().getPlayerCamera() : null;
+
+        if (ctrlHeld && camera != null && camera.isFreecam()) {
+            // the player stands still in the freecam, so the wheel changes the camera's speed instead
+            adjustFreecamSpeed(camera, wheel > 0 ? 1 : -1);
+        } else if (ctrlHeld && (player.flying || player.noClip)) {
             player.adjustFlySpeed(wheel > 0 ? 1 : -1);
+            this.game.getCenterIndicator().showMessage(
+                    String.format(Locale.ROOT, "Flight Speed: %.2fx", player.flySpeedMultiplier));
         } else {
             this.game.getPlayerInteraction().cycleSelectedTile(wheel > 0 ? 1 : -1);
         }
+    }
+
+    /** one wheel step is the same 15% as for flying; the camera keeps whatever limits it has */
+    private void adjustFreecamSpeed(PlayerCamera camera, int direction) {
+        float speed = camera.getFreecamSpeed();
+        speed = direction > 0 ? speed * 1.15F : speed / 1.15F;
+        camera.setFreecamSpeed(Math.max(0.5F, speed));
+
+        // read back, in case the camera clamped it
+        this.game.getCenterIndicator().showMessage(
+                String.format(Locale.ROOT, "Freecam Speed: %.1f blocks/s", camera.getFreecamSpeed()));
     }
 
     private void handleMouse(boolean playing, int mouseX, int mouseY) {

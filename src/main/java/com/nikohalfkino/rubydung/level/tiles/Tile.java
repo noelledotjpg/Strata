@@ -677,6 +677,12 @@ public class Tile {
     static float cornerBlockLight(Level level, int nx, int ny, int nz, int sx, int sy, int sz) {
         float center = level.getBlockLight(nx, ny, nz);
 
+        // the cell of a light source itself (the only cells at full strength): averaging it with the dimmer cells around it
+        // would make the face next to the source darker than the faces around that one, a dark ring around the lamp
+        if (center >= 1.0F) {
+            return center;
+        }
+
         int ax, ay, az, bx, by, bz;
         if (sx == 0) {
             ax = 0; ay = sy; az = 0;

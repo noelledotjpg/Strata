@@ -2,6 +2,7 @@ package com.nikohalfkino.rubydung.console.commands;
 
 import com.nikohalfkino.rubydung.RubyDung;
 import com.nikohalfkino.rubydung.console.Command;
+import com.nikohalfkino.rubydung.console.CommandArg;
 import com.nikohalfkino.rubydung.console.Console;
 import com.nikohalfkino.rubydung.level.generation.LevelGenerator;
 
@@ -27,6 +28,14 @@ public class RegenerateCommand implements Command {
                 "  seed  - a number or text; '-' skips this argument",
                 "  type  - flat or natural; '-' skips this argument",
                 "  size  - tiny, default, large or insane");
+    }
+
+    @Override
+    public List<CommandArg> arguments() {
+        return Arrays.asList(
+                CommandArg.word("seed").optional().skippable(),
+                CommandArg.choice("type", "flat", "natural").optional().skippable(),
+                CommandArg.choice("size", "tiny", "default", "large", "insane").optional());
     }
 
     @Override
@@ -58,6 +67,7 @@ public class RegenerateCommand implements Command {
         }
 
         game.regenerateLevel(seed, type, size);
-        console.println("World regenerated successfully.");
+        // the loading screen takes over from here, the new world is ready when it closes
+        console.println("Regenerating the world...");
     }
 }
