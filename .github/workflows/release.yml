@@ -56,7 +56,7 @@ jobs:
           chmod +x gradlew
           ./gradlew packagePortable -PappVersion="${{ steps.version.outputs.value }}"
 
-      # The setup/launcher app. Rust and cargo are preinstalled on GitHub's runners.
+      # The launcher app. Rust and cargo are preinstalled on GitHub's runners.
       # Run from launcher/ so launcher/.cargo/config.toml (static CRT on Windows) is picked up.
       - uses: Swatinem/rust-cache@v2
         with:
@@ -73,8 +73,6 @@ jobs:
         run: |
           mkdir -p dist
 
-          # portable: the app folder zipped. The launcher downloads exactly this file
-          # (it looks for "-<windows|linux>-x64-portable.zip"), so keep the name pattern.
           PORTABLE="Strata-${VERSION}-${PLATFORM}-x64-portable"
           (
             cd build/package
@@ -84,11 +82,9 @@ jobs:
             esac
           )
 
-          # the setup app users actually download (a few MB). No version in the name: it always
-          # fetches the newest release itself.
           case "$PLATFORM" in
-            windows) cp launcher/target/release/strata-launcher.exe "dist/Strata-Setup-windows-x64.exe" ;;
-            linux)   tar -czf "dist/Strata-Setup-linux-x64.tar.gz" -C launcher/target/release strata-launcher ;;
+            windows) cp launcher/target/release/strata-launcher.exe "dist/Strata-Launcher-windows-x64.exe" ;;
+            linux)   tar -czf "dist/Strata-Launcher-linux-x64.tar.gz" -C launcher/target/release strata-launcher ;;
           esac
 
           ls -l dist
