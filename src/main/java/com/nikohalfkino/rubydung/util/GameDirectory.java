@@ -25,6 +25,7 @@ public final class GameDirectory {
     private static final String OVERRIDE_PROPERTY = "strata.dataDir";
 
     private static final File ROOT = resolve();
+    private static final File LOG_DIR = resolveLogDir();
 
     private GameDirectory() {
     }
@@ -32,6 +33,61 @@ public final class GameDirectory {
     /** the folder everything is stored in, it exists */
     public static File root() {
         return ROOT;
+    }
+
+    /**
+     * where log.txt goes: next to the game (the install / app folder) when that folder can be written to, so the logs are
+     * easy to find and to attach to a bug report. an explicit -Dstrata.dataDir, a portable install, an IDE run and an
+     * app folder that is read-only (/opt, Program Files) all use the data folder instead
+     */
+    public static File logDir() {
+        return LOG_DIR;
+    }
+
+    private static File resolveLogDir() {
+        String override = System.getProperty(OVERRIDE_PROPERTY);
+        if (override == null || override.trim().isEmpty()) {
+            File app = findAppFolder();
+            if (app != null && app.isDirectory() && app.canWrite()) {
+                return app;
+            }
+        }
+        return ROOT;
+    }
+
+    // fallback from the jar: Windows is Strata/app/x.jar -> Strata, Linux is Strata/lib/app/x.jar -> Strata.
+    // null when not running from a jar (IDE, gradlew run)
+    private static File findAppFolder() {
+        // the folder of the game's own executable (Strata.exe, bin/Strata): that is where the launcher process lives.
+        // a plain java / javaw process (IDE, gradlew run, java -jar) is not the game's executable, then the jar decides
+        try {
+            java.util.Optional<String> command = ProcessHandle.current().info().command();
+            if (command.isPresent()) {
+                File exe = new File(command.get());
+                String name = exe.getName().toLowerCase(Locale.ROOT);
+                if (exe.isFile() && !name.startsWith("java") && exe.getParentFile() != null) {
+                    return exe.getParentFile();
+                }
+            }
+        } catch (RuntimeException e) {
+            // not available here, use the jar
+        }
+        try {
+            File location = new File(GameDirectory.class.getProtectionDomain().getCodeSource().getLocation().toURI());
+            if (!location.isFile()) {
+                return null;
+            }
+            File dir = location.getParentFile();
+            if (dir != null && dir.getName().equals("app")) {
+                dir = dir.getParentFile();
+                if (dir != null && dir.getName().equals("lib")) {
+                    dir = dir.getParentFile();
+                }
+            }
+            return dir;
+        } catch (URISyntaxException | RuntimeException e) {
+            return null;
+        }
     }
 
     /** a file or folder inside the data folder, e.g. file("options.txt") or file("worlds") */

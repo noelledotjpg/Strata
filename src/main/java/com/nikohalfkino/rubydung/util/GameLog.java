@@ -14,7 +14,7 @@ import java.util.Date;
 import java.util.Map;
 
 /**
- * copies everything the game prints (System.out, System.err, stack traces) into log.txt in the data folder, the run before
+ * copies everything the game prints (System.out, System.err, stack traces) into log.txt (next to the game when that folder is writable, else in the data folder, see GameDirectory.logDir), the run before
  * it is kept as log-previous.txt. also catches exceptions that end a thread, and a watchdog writes every thread's stack
  * into the log when the game stops drawing frames, so a freeze (no exception, nothing printed) can still be diagnosed
  *
@@ -39,8 +39,8 @@ public final class GameLog {
     public static void init() {
         PrintStream console = System.out;
         try {
-            File log = GameDirectory.file("log.txt");
-            File previous = GameDirectory.file("log-previous.txt");
+            File log = new File(GameDirectory.logDir(), "log.txt");
+            File previous = new File(GameDirectory.logDir(), "log-previous.txt");
             if (log.isFile()) {
                 Files.move(log.toPath(), previous.toPath(), StandardCopyOption.REPLACE_EXISTING);
             }
@@ -63,6 +63,7 @@ public final class GameLog {
         System.out.println("os " + System.getProperty("os.name") + " " + System.getProperty("os.version") + " " + System.getProperty("os.arch"));
         System.out.println("cpus " + rt.availableProcessors() + ", max heap " + (rt.maxMemory() >> 20) + " MB");
         System.out.println("data folder " + GameDirectory.root());
+        System.out.println("log folder " + GameDirectory.logDir());
 
         startWatchdog();
     }

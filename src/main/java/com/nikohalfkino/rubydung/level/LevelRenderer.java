@@ -961,7 +961,9 @@ public class LevelRenderer implements LevelListener {
     }
 
     public void dispose() {
+        cancelParallelBuild();   // the chunk workers of this world must not outlive it
         this.ocean.dispose();
+        this.border.dispose();
         if (this.chunks != null) {
             for (Chunk chunk : this.chunks) {
                 if (chunk != null) {

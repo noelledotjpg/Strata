@@ -94,6 +94,18 @@ public final class WorldBorderRenderer {
     }
 
     private final Map<Long, Patch> patches = new HashMap<>();
+
+    /** frees the patches' display lists: call when the world is left, or every world entered leaves its fringe lists behind */
+    public void dispose() {
+        for (Patch patch : this.patches.values()) {
+            if (patch.list != 0) {
+                glDeleteLists(patch.list, 1);
+                patch.list = 0;
+            }
+        }
+        this.patches.clear();
+        this.full = true;
+    }
     private Cell[] cellAt = new Cell[0];        // the cell on each block of the grid (null in the real world)
     private int[] gridTop = new int[0];
     private int[] gridBottom = new int[0];

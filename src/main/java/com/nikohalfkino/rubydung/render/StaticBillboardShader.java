@@ -49,6 +49,14 @@ public final class StaticBillboardShader {
                     "        vAuraRim = gl_MultiTexCoord5;\n" +
                     "        vAuraCore = gl_MultiTexCoord6;\n" +
                     "        vAuraBlend = gl_MultiTexCoord4.z;\n" +
+                    "    } else {\n" +
+                    // the sprite pass never reads these, but a varying that is only written on one path is undefined on the other
+                    "        vAuraArea = vec4(0.0);\n" +
+                    "        vAuraColor = vec4(0.0);\n" +
+                    "        vAuraBands = vec3(0.0);\n" +
+                    "        vAuraRim = vec4(0.0);\n" +
+                    "        vAuraCore = vec4(0.0);\n" +
+                    "        vAuraBlend = 0.0;\n" +
                     "    }\n" +
                     "    vWorldY = pivot.y;\n" +
                     "    vFogWorldXZ = pivot.xz;\n" +
@@ -72,13 +80,15 @@ public final class StaticBillboardShader {
                     "        float size = corner.z * scale;\n" +
                     "        p = pivot + vec3(uRight.x * corner.x * size, corner.y * size, uRight.y * corner.x * size);\n" +
                     "    }\n" +
-                    "    if (gone) {\n" +
-                    "        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);\n" +
-                    "        return;\n" +
-                    "    }\n" +
                     "    vWorldY = p.y;\n" +
                     "    vFogWorldXZ = p.xz;\n" +
-                    "    gl_Position = gl_ModelViewProjectionMatrix * vec4(p, 1.0);\n" +
+                    // no early return: some Intel drivers (UHD 620) drop the whole draw when main() returns from inside an if.
+                    // a dropped sprite is moved outside the clip volume instead
+                    "    vec4 clip = vec4(2.0, 2.0, 2.0, 1.0);\n" +
+                    "    if (!gone) {\n" +
+                    "        clip = gl_ModelViewProjectionMatrix * vec4(p, 1.0);\n" +
+                    "    }\n" +
+                    "    gl_Position = clip;\n" +
                     "}\n";
 
     private static final String FRAG =
@@ -155,8 +165,7 @@ public final class StaticBillboardShader {
                     // with another blend function (src + dst * (1 - src)), which ignores the alpha
                     "        float coverage = vAuraBlend < 0.5 ? a : 0.0;\n" +
                     "        gl_FragColor = vec4(glow * a, coverage);\n" +
-                    "        return;\n" +
-                    "    }\n" +
+                    "    } else {\n" +
                     "    vec4 c = texture2D(tex, gl_TexCoord[0].st);\n" +
                     "    if (c.a < uCutoff) discard;\n" +
                     // same light mix as TerrainShader: sky light (r) scaled by the live day/night ambient, block light (g) fills the rest
@@ -169,6 +178,7 @@ public final class StaticBillboardShader {
                     "        alpha = 1.0;\n" +
                     "    }\n" +
                     "    gl_FragColor = vec4(applyFog(rgb), c.a * alpha);\n" +
+                    "    }\n" +
                     "}\n";
 
     private static int program = 0;
