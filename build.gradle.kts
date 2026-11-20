@@ -172,6 +172,9 @@ fun jpackageArgs(type: String, outputDir: File): MutableList<String> {
         "--dest", outputDir.absolutePath,
         "--java-options", "-Dorg.lwjgl.librarypath=\$APPDIR/natives",
         "--java-options", "-Djtalk.home=\$APPDIR/jtalk",
+        // the JVM's default heap is 25% of RAM: 910 MB on a 4 GB PC, too little to enter a big world a second time.
+        // (a XL world needs about 2 GB, see LevelGenerator.WorldSize)
+        "--java-options", "-XX:MaxRAMPercentage=60",
     )
 
     val iconFile = file("src/main/resources/icon.$iconExtension")
@@ -274,7 +277,6 @@ tasks.register<Exec>("packageServer") {
             "--main-jar", "strata-server-${project.version}.jar",
             "--main-class", serverMainClass,
             "--dest", outputDir.absolutePath,
-            // XL / XXL worlds need more: raise it here or start with --max-memory style JAVA_TOOL_OPTIONS
             "--java-options", "-Xmx3g",
         )
     }

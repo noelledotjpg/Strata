@@ -1,0 +1,73 @@
+name: Build server
+
+# The dedicated server (gradle packageServer): an app image with its own Java and the world settings window.
+# Run it on its own from the Actions tab, or it is called by "Build all".
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build, e.g. 0.2.3b (empty = GAME_VERSION from RubyDung.java)"
+        required: false
+        default: ""
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: false
+        default: ""
+
+jobs:
+  server:
+    name: Server (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: windows-latest, platform: windows }
+          - { runner: ubuntu-latest,  platform: linux }
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Resolve version
+        id: version
+        uses: ./.github/actions/resolve-version
+        with:
+          override: ${{ inputs.version }}
+
+      - name: Build server image
+        run: |
+          chmod +x gradlew
+          ./gradlew packageServer -PappVersion="${{ steps.version.outputs.value }}"
+
+      - name: Zip
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          mkdir -p dist
+          # not "-portable.zip": the launcher looks for that ending and must never pick the server
+          NAME="Strata-Server-${VERSION}-${PLATFORM}-x64"
+          cd build/server-package
+          case "$PLATFORM" in
+            windows) 7z a -tzip "$GITHUB_WORKSPACE/dist/$NAME.zip" Strata-Server ;;
+            linux)   zip -r -y "$GITHUB_WORKSPACE/dist/$NAME.zip" Strata-Server ;;
+          esac
+          ls -l "$GITHUB_WORKSPACE/dist"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strata-server-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error

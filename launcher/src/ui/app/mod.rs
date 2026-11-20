@@ -85,10 +85,12 @@ pub struct App {
     username: String,
     busy: Option<Busy>,
     message: Option<(String, bool)>,
+    first_frame_reported: bool,
 }
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, open_uninstall: bool) -> Self {
+        crate::stage("window created, building the interface");
         style::install_fonts(&cc.egui_ctx);
 
         let installed = read_state();
@@ -117,6 +119,7 @@ impl App {
             username: read_username().unwrap_or_default(),
             busy: None,
             message: None,
+            first_frame_reported: false,
         };
         app.check_remote(&cc.egui_ctx);
         app
@@ -261,6 +264,10 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if !self.first_frame_reported {
+            self.first_frame_reported = true;
+            crate::startup_finished();
+        }
         while let Ok(msg) = self.rx.try_recv() {
             self.handle(msg);
         }

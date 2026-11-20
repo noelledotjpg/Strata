@@ -1,0 +1,53 @@
+name: Resolve version
+description: >
+  The version to build: the override if one is given, else the pushed tag (v1.2.3 -> 1.2.3),
+  else GAME_VERSION from RubyDung.java (v0.2.3b -> 0.2.3b). Needs the repository checked out first.
+
+inputs:
+  override:
+    description: "Version to use instead of the one in the source (empty = derive it)"
+    required: false
+    default: ""
+
+outputs:
+  value:
+    description: "The version without a leading v, e.g. 0.2.3b"
+    value: ${{ steps.resolve.outputs.value }}
+
+runs:
+  using: composite
+  steps:
+    - id: resolve
+      shell: bash
+      env:
+        OVERRIDE: ${{ inputs.override }}
+      run: |
+        set -euo pipefail
+
+        # public static final String GAME_VERSION = "v0.2.3b";
+        FILE_VERSION="$(sed -n 's/.*GAME_VERSION *= *"\([^"]*\)".*/\1/p' "$(find src -name RubyDung.java | head -n1)" | head -n1)"
+        FILE_VERSION="${FILE_VERSION#v}"
+
+        if [[ -n "$OVERRIDE" ]]; then
+          VERSION="${OVERRIDE#v}"
+        elif [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [[ -n "$FILE_VERSION" && "$VERSION" != "$FILE_VERSION" ]]; then
+            echo "::warning::The tag says $VERSION but RubyDung.GAME_VERSION says $FILE_VERSION. The release uses the tag."
+          fi
+        else
+          VERSION="$FILE_VERSION"
+        fi
+
+        if [[ -z "$VERSION" ]]; then
+          echo "::error::Could not work out the version: no input, no tag, and no GAME_VERSION in RubyDung.java"
+          exit 1
+        fi
+        # jpackage and the release tag both choke on spaces and slashes
+        if [[ ! "$VERSION" =~ ^[0-9]+(\.[0-9]+){0,2}[A-Za-z0-9._-]*$ ]]; then
+          echo "::error::'$VERSION' is not a usable version (expected something like 1.2.3 or 0.2.3b)"
+          exit 1
+        fi
+
+        echo "Version: $VERSION"
+        echo "value=$VERSION" >> "$GITHUB_OUTPUT"

@@ -12,6 +12,7 @@ import com.nikohalfkino.rubydung.net.Multiplayer;
 import com.nikohalfkino.rubydung.level.generation.LevelGenerator;
 import com.nikohalfkino.rubydung.level.generation.WorldGenStatus;
 import com.nikohalfkino.rubydung.util.SaveQueue;
+import com.nikohalfkino.rubydung.util.GameLog;
 import com.nikohalfkino.rubydung.entity.player.Player;
 import com.nikohalfkino.rubydung.entity.player.interaction.PlayerInteraction;
 
@@ -83,7 +84,13 @@ public class GameSession {
 
         // The old world (door travel) is dropped now, not when the new one is ready: it has been saved by the caller,
         // and while it lingered the game would keep saving the new world's clock into its files.
+        GameLog.memory("leaving the old world");
         leaveWorld();
+        // The old world's arrays (blocks, data, liquids: hundreds of MB on a big world) must be gone before the new
+        // ones are asked for. A full collection here also compacts the heap, so the new world's huge arrays find room
+        // on a small heap. The two log lines show whether the old world really was released.
+        System.gc();
+        GameLog.memory("old world released");
 
         // Creating the level (generating or reading it) takes seconds. It used to run right here, on the thread that
         // draws the frames, so the loading screen was not on screen yet and could not show what the generator was
@@ -105,6 +112,11 @@ public class GameSession {
                         : new Level(worldName, width, height, depth, type);
             } catch (Throwable t) {
                 t.printStackTrace();
+                if (t instanceof OutOfMemoryError) {
+                    System.err.println("[worldgen] not enough memory for a " + width + " x " + height + " x " + depth + " world, "
+                            + "give the game more heap (-Xmx / -XX:MaxRAMPercentage) or pick a smaller world size");
+                    GameLog.memory("after the failed load");
+                }
                 this.game.runOnMainThread(() -> this.game.openScreen(new TitleScreen(this.game)));
                 return;
             }
@@ -270,6 +282,7 @@ public class GameSession {
             this.levelRenderer.dispose();
         }
 
+        this.networkLoading = null;
         this.level = null;
         this.levelRenderer = null;
         this.playerInteraction = null;

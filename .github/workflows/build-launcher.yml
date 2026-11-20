@@ -1,0 +1,53 @@
+name: Build launcher
+
+# The installer / launcher app (Rust, in launcher/).
+# Run it on its own from the Actions tab, or it is called by "Build all".
+on:
+  workflow_dispatch:
+  workflow_call:
+
+jobs:
+  launcher:
+    name: Launcher (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: windows-latest, platform: windows }
+          # an older Ubuntu on purpose: a binary links against the glibc of the machine that built it
+          # and only runs on systems with the same or a newer one
+          - { runner: ubuntu-22.04,   platform: linux }
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Rust and cargo are preinstalled on GitHub's runners.
+      # Built from launcher/ so launcher/.cargo/config.toml (static CRT on Windows) is picked up.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: launcher
+
+      - name: Build launcher
+        working-directory: launcher
+        run: cargo build --release
+
+      - name: Collect
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          mkdir -p dist
+          case "$PLATFORM" in
+            windows) cp launcher/target/release/strata-launcher.exe "dist/Strata-Launcher-windows-x64.exe" ;;
+            linux)   tar -czf "dist/Strata-Launcher-linux-x64.tar.gz" -C launcher/target/release strata-launcher ;;
+          esac
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strata-launcher-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error

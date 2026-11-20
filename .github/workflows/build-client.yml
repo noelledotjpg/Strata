@@ -1,0 +1,76 @@
+name: Build client
+
+# The game itself: a portable app image with its own Java, zipped per platform.
+# Run it on its own from the Actions tab, or it is called by "Build all".
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build, e.g. 0.2.3b (empty = GAME_VERSION from RubyDung.java)"
+        required: false
+        default: ""
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: false
+        default: ""
+
+jobs:
+  client:
+    name: Client (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: windows-latest, platform: windows }
+          - { runner: ubuntu-latest,  platform: linux }
+          # macOS is disabled for now. LWJGL 2.9.3 only ships x86_64 macOS natives, so if you
+          # re-enable it, build on an Intel runner:
+          # - { runner: macos-15-intel, platform: macos }
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Resolve version
+        id: version
+        uses: ./.github/actions/resolve-version
+        with:
+          override: ${{ inputs.version }}
+
+      - name: Build portable image
+        run: |
+          chmod +x gradlew
+          ./gradlew packagePortable -PappVersion="${{ steps.version.outputs.value }}"
+
+      - name: Zip
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          mkdir -p dist
+          # the launcher finds the download by this ending: -<platform>-x64-portable.zip
+          PORTABLE="Strata-${VERSION}-${PLATFORM}-x64-portable"
+          cd build/package
+          case "$PLATFORM" in
+            windows) 7z a -tzip "$GITHUB_WORKSPACE/dist/$PORTABLE.zip" Strata ;;
+            linux)   zip -r -y "$GITHUB_WORKSPACE/dist/$PORTABLE.zip" Strata ;;
+          esac
+          ls -l "$GITHUB_WORKSPACE/dist"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strata-client-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error

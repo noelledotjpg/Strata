@@ -1,0 +1,91 @@
+name: Build all
+
+# Pushing a tag v* builds everything and publishes a GitHub release.
+# Running it by hand: tick what to build. "Publish" creates a DRAFT release from the result.
+on:
+  push:
+    tags:
+      - "v*"          # e.g. v0.2.3b
+  workflow_dispatch:
+    inputs:
+      client:
+        description: "Build the game (client)"
+        type: boolean
+        default: true
+      server:
+        description: "Build the dedicated server"
+        type: boolean
+        default: true
+      launcher:
+        description: "Build the launcher"
+        type: boolean
+        default: true
+      publish:
+        description: "Create a draft release from what was built"
+        type: boolean
+        default: true
+      version:
+        description: "Version, e.g. 0.2.3b (empty = GAME_VERSION from RubyDung.java)"
+        type: string
+        required: false
+        default: ""
+
+jobs:
+  version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      value: ${{ steps.version.outputs.value }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        uses: ./.github/actions/resolve-version
+        with:
+          override: ${{ inputs.version }}
+
+  client:
+    needs: version
+    if: ${{ github.event_name == 'push' || inputs.client }}
+    uses: ./.github/workflows/build-client.yml
+    with:
+      version: ${{ needs.version.outputs.value }}
+
+  server:
+    needs: version
+    if: ${{ github.event_name == 'push' || inputs.server }}
+    uses: ./.github/workflows/build-server.yml
+    with:
+      version: ${{ needs.version.outputs.value }}
+
+  launcher:
+    needs: version
+    if: ${{ github.event_name == 'push' || inputs.launcher }}
+    uses: ./.github/workflows/build-launcher.yml
+
+  release:
+    name: Publish release
+    needs: [version, client, server, launcher]
+    # the builds that were not ticked are skipped, which is fine; a failed build stops the release
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && (github.event_name == 'push' || inputs.publish) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: strata-*
+          path: dist
+          merge-multiple: true
+
+      - run: ls -l dist
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          # Tag pushes use their own tag. Manual runs create v<version> and keep the release
+          # as a draft, so you can set "pre-release" etc. and publish it from the Releases page.
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', needs.version.outputs.value) }}
+          target_commitish: ${{ github.sha }}
+          draft: ${{ github.event_name == 'workflow_dispatch' }}
+          files: dist/*
+          generate_release_notes: true
